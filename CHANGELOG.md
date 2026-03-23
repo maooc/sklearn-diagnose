@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Probability Prediction Diagnostics**: Enhanced classification task diagnostics with probability prediction quality analysis
+  - New failure modes: `poor_calibration`, `low_confidence`, `poor_class_separation`
+  - 17 new probability-related signals including:
+    - Calibration quality: `calibration_error` (ECE), `brier_score`
+    - Confidence metrics: `avg_predicted_probability`, `high_confidence_ratio`, `low_confidence_ratio`, `confidence_gap`
+    - Class separation: `class_separation_score` (AUC-ROC), `per_class_avg_probability`, `per_class_probability_std`
+    - Threshold analysis: `threshold_metrics`, `optimal_threshold`, `optimal_threshold_f1`
+  - Recommendation templates for probability-related issues (calibration methods, threshold tuning, feature engineering)
+  - Graceful degradation for models without `predict_proba` (e.g., LinearSVC)
+  - Full test coverage (11 new tests in `TestProbabilityDiagnostics`)
 - **Interactive Chatbot**: Web-based chatbot for exploring diagnosis results through conversation
   - FastAPI backend with REST API endpoints (`/api/chat`, `/api/report`, `/api/welcome`)
   - React + Vite frontend with bundled static files
@@ -24,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- LLM system prompts updated to leverage probability prediction signals
+- MockLLMClient updated to handle new probability-related failure modes
 - Chatbot dependencies (FastAPI, Uvicorn, python-multipart) moved from optional to required
 - Test file renamed from `test_diagnose.py` to `unit_test_diagnose.py`
 

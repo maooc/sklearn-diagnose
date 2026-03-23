@@ -272,6 +272,9 @@ launch_chatbot(
 | **Feature Redundancy** | Correlated/duplicate features | Detailed correlated pair list with correlation values |
 | **Class Imbalance** | Skewed class distribution | Class distribution, per-class recall/precision, recall disparity |
 | **Data Leakage** | Information from future/val in train | CV-to-holdout gap, suspicious feature-target correlations |
+| **Poor Calibration** | Predicted probabilities don't match outcomes | High ECE, high Brier score, small confidence gap |
+| **Low Confidence** | Model uncertain about predictions | Low average confidence, high low-confidence ratio |
+| **Poor Class Separation** | Difficulty distinguishing classes | Low AUC-ROC, similar probability distributions across classes |
 
 ## Output Format
 
@@ -337,6 +340,15 @@ report.signals.val_score        # 0.71
 report.signals.cv_mean          # 0.73 (if CV provided)
 report.signals.cv_std           # 0.12 (if CV provided)
 report.signals.to_dict()        # Convert to dict for serialization
+
+# Probability prediction signals (classification only, requires predict_proba)
+report.signals.has_probability_predictions  # True if model supports predict_proba
+report.signals.avg_predicted_probability    # Average confidence across predictions
+report.signals.brier_score                  # Probability quality (lower is better)
+report.signals.calibration_error            # Expected Calibration Error (ECE)
+report.signals.class_separation_score       # AUC-ROC for class discrimination
+report.signals.optimal_threshold            # Best threshold for F1 (binary only)
+report.signals.optimal_threshold_f1         # F1 at optimal threshold
 ```
 
 ## Design Principles
