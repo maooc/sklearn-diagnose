@@ -72,19 +72,19 @@ def generate_hypotheses(
 ) -> List[Hypothesis]:
     """
     Generate hypotheses using deterministic rules (reference implementation).
-    
+
     Note: The main diagnose() function now uses LLM-based hypothesis generation.
     This function is kept as a reference implementation and potential fallback.
-    
+
     Args:
         signals: Computed signals from the signal extraction layer
         task: Classification or regression
-        
+
     Returns:
         List of confidence-weighted hypotheses
     """
     hypotheses = []
-    
+
     # Check each failure mode
     hypotheses.extend(_check_overfitting(signals))
     hypotheses.extend(_check_underfitting(signals))
@@ -93,13 +93,21 @@ def generate_hypotheses(
     hypotheses.extend(_check_feature_redundancy(signals))
     hypotheses.extend(_check_label_noise(signals, task))
     hypotheses.extend(_check_data_leakage(signals))
-    
+
+    # Check probability prediction failure modes (classification only)
+    if task == TaskType.CLASSIFICATION and signals.has_probability_outputs:
+        hypotheses.extend(_check_poor_calibration(signals))
+        hypotheses.extend(_check_low_confidence_predictions(signals))
+        hypotheses.extend(_check_ambiguous_class_boundaries(signals))
+        hypotheses.extend(_check_suboptimal_threshold(signals))
+        hypotheses.extend(_check_confidence_accuracy_mismatch(signals))
+
     # Filter out low-confidence hypotheses
     # (keep even low confidence for transparency, but mark appropriately)
-    
+
     # Sort by confidence (highest first)
     hypotheses.sort(key=lambda h: h.confidence, reverse=True)
-    
+
     return hypotheses
 
 
@@ -444,7 +452,7 @@ def _check_label_noise(signals: Signals, task: TaskType) -> List[Hypothesis]:
 def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
     """
     Check for data leakage signals.
-    
+
     Data leakage is characterized by:
     - CV performance much higher than holdout
     - Suspiciously high feature-target correlations
@@ -454,11 +462,11 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
     evidence = []
     confidence = 0.0
     severity = "low"
-    
+
     # CV vs holdout discrepancy
     if signals.cv_holdout_gap is not None:
         gap = signals.cv_holdout_gap
-        
+
         if gap > THRESHOLDS["cv_holdout_gap"] * 2:
             confidence = min(0.80, 0.5 + gap)
             severity = "high"
@@ -471,12 +479,12 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
             evidence.append(
                 f"CV-holdout gap of {gap:.1%} may indicate leakage or distribution shift"
             )
-    
+
     # Suspiciously high feature-target correlations
     if signals.suspicious_feature_correlations is not None:
         n_suspicious = len(signals.suspicious_feature_correlations)
         max_corr = signals.suspicious_feature_correlations[0][1]
-        
+
         if abs(max_corr) >= THRESHOLDS["feature_target_corr"]:
             confidence = min(0.85, confidence + 0.25)
             severity = "high"
@@ -484,7 +492,7 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
                 f"{n_suspicious} feature(s) have suspiciously high correlation with target "
                 f"(max: {max_corr:.1%})"
             )
-    
+
     # Perfect training score is always suspicious
     if signals.train_score is not None and signals.train_score >= 0.99:
         confidence = min(0.75, confidence + 0.20)
@@ -492,7 +500,7 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
             f"Perfect training score ({signals.train_score:.1%}) warrants leakage investigation"
         )
         severity = "high"
-    
+
     if confidence >= 0.30 and evidence:
         hypotheses.append(Hypothesis(
             name=FailureMode.DATA_LEAKAGE,
@@ -500,5 +508,238 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
             evidence=evidence,
             severity=severity
         ))
-    
+
+    return hypotheses
+
+
+# ============================================================================
+# Probability Prediction Failure Mode Detection
+# ============================================================================
+
+def _check_poor_calibration(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for poor probability calibration.
+
+    Poor calibration is characterized by:
+    - High calibration error (predicted probabilities don't match empirical accuracy)
+    - Overconfident or underconfident predictions
+    """
+    hypotheses = []
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+
+    if signals.proba_calibration_error is not None:
+        cal_error = signals.proba_calibration_error
+
+        if cal_error > 0.15:
+            confidence = min(0.85, 0.5 + cal_error * 2)
+            severity = "high"
+            evidence.append(f"Calibration error of {cal_error:.1%} is severe")
+        elif cal_error > 0.10:
+            confidence = min(0.65, 0.35 + cal_error * 2)
+            severity = "medium"
+            evidence.append(f"Calibration error of {cal_error:.1%} indicates poor calibration")
+        elif cal_error > 0.05:
+            confidence = min(0.45, 0.2 + cal_error * 2)
+            severity = "low"
+            evidence.append(f"Calibration error of {cal_error:.1%} suggests mild miscalibration")
+
+    if confidence >= 0.25 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.POOR_CALIBRATION,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+
+    return hypotheses
+
+
+def _check_low_confidence_predictions(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for systematically low confidence predictions.
+
+    Low confidence is characterized by:
+    - Low mean predicted probability
+    - High ratio of low-confidence predictions
+    - High prediction entropy
+    """
+    hypotheses = []
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+
+    # Check mean probability
+    if signals.proba_mean is not None:
+        if signals.proba_mean < 0.65:
+            confidence = min(0.75, 0.5 + (0.65 - signals.proba_mean))
+            severity = "medium"
+            evidence.append(f"Mean predicted probability is only {signals.proba_mean:.1%}")
+
+    # Check low confidence ratio
+    if signals.low_confidence_ratio is not None:
+        if signals.low_confidence_ratio > 0.40:
+            confidence = min(0.85, confidence + 0.3)
+            severity = "high"
+            evidence.append(f"{signals.low_confidence_ratio:.1%} of predictions have low confidence (< 0.6)")
+        elif signals.low_confidence_ratio > 0.25:
+            confidence = min(0.60, confidence + 0.15)
+            evidence.append(f"{signals.low_confidence_ratio:.1%} of predictions have low confidence")
+
+    # Check entropy (high entropy = uncertain predictions)
+    if signals.proba_entropy is not None:
+        # For binary: max entropy is ln(2) ≈ 0.69
+        # For multiclass: max entropy is ln(n_classes)
+        if signals.proba_entropy > 0.5:
+            confidence = min(0.70, confidence + 0.15)
+            evidence.append(f"High prediction entropy ({signals.proba_entropy:.2f}) indicates uncertainty")
+
+    if confidence >= 0.25 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.LOW_CONFIDENCE_PREDICTIONS,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+
+    return hypotheses
+
+
+def _check_ambiguous_class_boundaries(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for ambiguous class boundaries.
+
+    Ambiguous boundaries are characterized by:
+    - Small margins between top-2 class probabilities
+    - High ratio of ambiguous predictions
+    """
+    hypotheses = []
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+
+    # Check margin mean
+    if signals.proba_margin_mean is not None:
+        if signals.proba_margin_mean < 0.3:
+            confidence = min(0.75, 0.5 + (0.3 - signals.proba_margin_mean))
+            severity = "medium"
+            evidence.append(f"Small mean margin ({signals.proba_margin_mean:.1%}) between top classes")
+
+    # Check ambiguous predictions ratio
+    if signals.ambiguous_predictions_ratio is not None:
+        if signals.ambiguous_predictions_ratio > 0.35:
+            confidence = min(0.85, confidence + 0.25)
+            severity = "high"
+            evidence.append(f"{signals.ambiguous_predictions_ratio:.1%} of predictions are ambiguous (margin < 0.2)")
+        elif signals.ambiguous_predictions_ratio > 0.20:
+            confidence = min(0.60, confidence + 0.15)
+            evidence.append(f"{signals.ambiguous_predictions_ratio:.1%} of predictions are ambiguous")
+
+    if confidence >= 0.25 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.AMBIGUOUS_CLASS_BOUNDARIES,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+
+    return hypotheses
+
+
+def _check_suboptimal_threshold(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for suboptimal decision threshold (binary classification).
+
+    Suboptimal threshold is characterized by:
+    - Large difference between optimal threshold and 0.5
+    - High threshold sensitivity (performance varies significantly with threshold)
+    """
+    hypotheses = []
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+
+    # Check if optimal threshold differs significantly from 0.5
+    if signals.optimal_threshold is not None:
+        threshold_diff = abs(signals.optimal_threshold - 0.5)
+
+        if threshold_diff > 0.20:
+            confidence = min(0.70, 0.4 + threshold_diff)
+            severity = "medium"
+            evidence.append(f"Optimal threshold ({signals.optimal_threshold:.2f}) differs significantly from 0.5")
+        elif threshold_diff > 0.10:
+            confidence = min(0.50, 0.25 + threshold_diff)
+            evidence.append(f"Optimal threshold ({signals.optimal_threshold:.2f}) differs from default 0.5")
+
+    # Check threshold sensitivity
+    if signals.threshold_sensitivity is not None:
+        if signals.threshold_sensitivity > 0.25:
+            confidence = min(0.80, confidence + 0.20)
+            severity = "high"
+            evidence.append(f"High threshold sensitivity ({signals.threshold_sensitivity:.1%}) - performance varies significantly")
+        elif signals.threshold_sensitivity > 0.15:
+            confidence = min(0.60, confidence + 0.10)
+            evidence.append(f"Moderate threshold sensitivity ({signals.threshold_sensitivity:.1%})")
+
+    if confidence >= 0.25 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.SUBOPTIMAL_THRESHOLD,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+
+    return hypotheses
+
+
+def _check_confidence_accuracy_mismatch(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for mismatch between confidence and accuracy.
+
+    Mismatch is characterized by:
+    - Low or negative correlation between confidence and correctness
+    - High confidence on wrong predictions
+    """
+    hypotheses = []
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+
+    # Check confidence-accuracy correlation
+    if signals.confidence_accuracy_correlation is not None:
+        corr = signals.confidence_accuracy_correlation
+
+        if corr < 0:
+            confidence = min(0.80, 0.5 - corr)
+            severity = "high"
+            evidence.append(f"Negative correlation ({corr:.2f}) between confidence and accuracy")
+        elif corr < 0.2:
+            confidence = min(0.60, 0.4 - corr)
+            severity = "medium"
+            evidence.append(f"Weak correlation ({corr:.2f}) between confidence and accuracy")
+        elif corr < 0.4:
+            confidence = min(0.45, 0.3 - corr * 0.5)
+            evidence.append(f"Moderate correlation ({corr:.2f}) suggests room for improvement")
+
+    # Check high confidence ratio vs accuracy
+    if (signals.high_confidence_ratio is not None and
+        signals.val_score is not None):
+
+        # If many high confidence predictions but low accuracy
+        if signals.high_confidence_ratio > 0.5 and signals.val_score < 0.7:
+            confidence = min(0.70, confidence + 0.15)
+            evidence.append(
+                f"High confidence on {signals.high_confidence_ratio:.1%} of predictions "
+                f"but only {signals.val_score:.1%} accuracy"
+            )
+
+    if confidence >= 0.25 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.CONFIDENCE_ACCURACY_MISMATCH,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+
     return hypotheses

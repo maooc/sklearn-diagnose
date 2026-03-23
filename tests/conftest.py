@@ -214,7 +214,84 @@ class MockLLMClient(LLMClient):
                 severity="high" if leakage_confidence >= 0.50 else "medium",
                 evidence=leakage_evidence
             ))
-        
+
+        # ============================================================================
+        # Probability Prediction Failure Modes
+        # ============================================================================
+
+        has_proba = signals.get("has_probability_outputs", False)
+
+        if has_proba and task == "classification":
+            # Check for poor calibration
+            cal_error = signals.get("proba_calibration_error")
+            if cal_error is not None and cal_error > 0.10:
+                hypotheses.append(Hypothesis(
+                    name=FailureMode.POOR_CALIBRATION,
+                    confidence=min(0.85, 0.5 + cal_error * 2),
+                    severity="high" if cal_error > 0.15 else "medium",
+                    evidence=[
+                        f"Calibration error of {cal_error:.1%} indicates poor probability calibration",
+                        "Predicted probabilities may not reflect true likelihoods"
+                    ]
+                ))
+
+            # Check for low confidence predictions
+            proba_mean = signals.get("proba_mean")
+            low_conf_ratio = signals.get("low_confidence_ratio")
+            if proba_mean is not None and proba_mean < 0.65:
+                hypotheses.append(Hypothesis(
+                    name=FailureMode.LOW_CONFIDENCE_PREDICTIONS,
+                    confidence=min(0.75, 0.5 + (0.65 - proba_mean)),
+                    severity="medium",
+                    evidence=[
+                        f"Mean predicted probability is only {proba_mean:.1%}",
+                        f"{low_conf_ratio:.1%} of predictions have low confidence (< 0.6)" if low_conf_ratio else "Many predictions show low confidence"
+                    ]
+                ))
+
+            # Check for ambiguous class boundaries
+            margin_mean = signals.get("proba_margin_mean")
+            ambiguous_ratio = signals.get("ambiguous_predictions_ratio")
+            if margin_mean is not None and margin_mean < 0.3:
+                hypotheses.append(Hypothesis(
+                    name=FailureMode.AMBIGUOUS_CLASS_BOUNDARIES,
+                    confidence=min(0.75, 0.5 + (0.3 - margin_mean)),
+                    severity="medium",
+                    evidence=[
+                        f"Small mean margin ({margin_mean:.1%}) between top classes",
+                        f"{ambiguous_ratio:.1%} of predictions are ambiguous (margin < 0.2)" if ambiguous_ratio else "Many predictions show ambiguous boundaries"
+                    ]
+                ))
+
+            # Check for suboptimal threshold (binary)
+            optimal_thresh = signals.get("optimal_threshold")
+            thresh_sensitivity = signals.get("threshold_sensitivity")
+            if optimal_thresh is not None:
+                thresh_diff = abs(optimal_thresh - 0.5)
+                if thresh_diff > 0.15:
+                    hypotheses.append(Hypothesis(
+                        name=FailureMode.SUBOPTIMAL_THRESHOLD,
+                        confidence=min(0.70, 0.4 + thresh_diff),
+                        severity="medium",
+                        evidence=[
+                            f"Optimal threshold ({optimal_thresh:.2f}) differs significantly from default 0.5",
+                            f"Threshold sensitivity: {thresh_sensitivity:.1%}" if thresh_sensitivity else "Performance varies with threshold choice"
+                        ]
+                    ))
+
+            # Check for confidence-accuracy mismatch
+            conf_acc_corr = signals.get("confidence_accuracy_correlation")
+            if conf_acc_corr is not None and conf_acc_corr < 0.2:
+                hypotheses.append(Hypothesis(
+                    name=FailureMode.CONFIDENCE_ACCURACY_MISMATCH,
+                    confidence=min(0.70, 0.5 - conf_acc_corr),
+                    severity="high" if conf_acc_corr < 0 else "medium",
+                    evidence=[
+                        f"Weak correlation ({conf_acc_corr:.2f}) between confidence and accuracy",
+                        "Model may be overconfident on incorrect predictions"
+                    ]
+                ))
+
         return hypotheses
     
     def generate_recommendations(

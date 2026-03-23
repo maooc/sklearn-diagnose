@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Probability Prediction Diagnosis**: Comprehensive probability output analysis for classification models
+  - Probability distribution analysis (mean, std, entropy of predicted probabilities)
+  - Confidence pattern analysis (high/low confidence ratios, confidence-accuracy correlation)
+  - Class separation analysis (margin between top-2 classes, ambiguous prediction detection)
+  - Threshold sensitivity analysis for binary classification (optimal threshold, AUC-ROC, AUC-PR)
+  - Calibration error estimation
+  - Per-class probability statistics
+  - 5 new failure modes: Poor Calibration, Low Confidence Predictions, Ambiguous Class Boundaries, Suboptimal Threshold, Confidence-Accuracy Mismatch
+  - Graceful degradation for classifiers without `predict_proba` support
+  - Full compatibility with scikit-learn Pipelines
+  - Comprehensive test suite (`tests/test_probability_signals.py`) with 16 test cases
+  - Example script (`examples/probability_diagnosis_example.py`) demonstrating all features
 - **Interactive Chatbot**: Web-based chatbot for exploring diagnosis results through conversation
   - FastAPI backend with REST API endpoints (`/api/chat`, `/api/report`, `/api/welcome`)
   - React + Vite frontend with bundled static files

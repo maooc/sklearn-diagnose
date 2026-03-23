@@ -32,7 +32,8 @@ HYPOTHESIS_SYSTEM_PROMPT = """You are an expert ML diagnostician agent. Your tas
 
 You will be given:
 1. Performance metrics (train score, validation score, CV scores, etc.)
-2. A list of possible failure modes to consider
+2. Probability prediction signals (for classification models with probability outputs)
+3. A list of possible failure modes to consider
 
 For each failure mode you detect, you must provide:
 - failure_mode: The name of the failure mode (must be one of the provided options)
@@ -46,6 +47,12 @@ Guidelines:
 - Base your assessment solely on the provided signals
 - Provide specific, quantitative evidence when possible
 - A model can have multiple failure modes simultaneously
+- For classification models with probability outputs, pay special attention to:
+  * poor_calibration: High calibration error (>10%) or misaligned confidence
+  * low_confidence_predictions: Mean confidence <65% or many low-confidence predictions
+  * ambiguous_class_boundaries: Small margins between top classes or many ambiguous predictions
+  * suboptimal_threshold: Optimal threshold significantly different from 0.5
+  * confidence_accuracy_mismatch: Low correlation between confidence and accuracy
 
 Output format (STRICT JSON - no markdown, no code blocks):
 {
@@ -78,6 +85,7 @@ Guidelines:
 - You can use the example recommendations as guidance, but feel free to suggest others
 - Avoid redundant recommendations
 - Order recommendations from most to least impactful
+- For probability-related failure modes (poor_calibration, low_confidence_predictions, ambiguous_class_boundaries, suboptimal_threshold, confidence_accuracy_mismatch), prioritize recommendations that directly address the probability output quality
 
 Output format (STRICT JSON - no markdown, no code blocks):
 {
@@ -103,9 +111,10 @@ Guidelines:
 - Present recommendations in order of importance
 - Use markdown formatting for clarity
 - Include specific numbers and metrics from the evidence
-- For feature_redundancy, include the specific correlated feature pairs
+- For feature_redundancy, include the specific correlated feature pairs and their correlation values
 - For class_imbalance, include class distribution and recall disparities
 - For data_leakage, include suspicious feature correlations and CV-holdout gaps
+- For probability-related issues (poor_calibration, low_confidence_predictions, ambiguous_class_boundaries, suboptimal_threshold, confidence_accuracy_mismatch), include specific probability metrics (calibration error, confidence levels, AUC-ROC, optimal threshold) in your diagnosis
 
 Structure your response as:
 ## Diagnosis
@@ -764,6 +773,60 @@ def _build_hypothesis_prompt(signals: Dict[str, Any], task: str) -> str:
         if n_suspicious > 5:
             signal_lines.append(f"    - ... and {n_suspicious - 5} more suspicious features")
     
+    # Probability prediction signals (classification only)
+    if task == "classification" and signals.get("has_probability_outputs"):
+        signal_lines.append("\n=== Probability Prediction Signals ===")
+        
+        # Distribution analysis
+        if signals.get("proba_mean") is not None:
+            signal_lines.append(f"- Mean predicted probability: {signals['proba_mean']:.1%}")
+        if signals.get("proba_std") is not None:
+            signal_lines.append(f"- Std of predicted probabilities: {signals['proba_std']:.1%}")
+        if signals.get("proba_entropy") is not None:
+            signal_lines.append(f"- Prediction entropy: {signals['proba_entropy']:.3f}")
+        if signals.get("proba_calibration_error") is not None:
+            signal_lines.append(f"- Calibration error: {signals['proba_calibration_error']:.1%}")
+            if signals["proba_calibration_error"] > 0.10:
+                signal_lines.append("  WARNING: High calibration error - predicted probabilities may not reflect true likelihoods")
+        
+        # Confidence analysis
+        if signals.get("high_confidence_ratio") is not None:
+            signal_lines.append(f"- High confidence predictions (>90%): {signals['high_confidence_ratio']:.1%}")
+        if signals.get("low_confidence_ratio") is not None:
+            signal_lines.append(f"- Low confidence predictions (<60%): {signals['low_confidence_ratio']:.1%}")
+        if signals.get("confidence_accuracy_correlation") is not None:
+            corr = signals["confidence_accuracy_correlation"]
+            signal_lines.append(f"- Confidence-accuracy correlation: {corr:.3f}")
+            if corr < 0.2:
+                signal_lines.append("  WARNING: Low correlation between confidence and accuracy - model may be overconfident or underconfident")
+        
+        # Class separation analysis
+        if signals.get("proba_margin_mean") is not None:
+            signal_lines.append(f"- Mean margin (top-2 classes): {signals['proba_margin_mean']:.1%}")
+        if signals.get("ambiguous_predictions_ratio") is not None:
+            ambiguous_ratio = signals["ambiguous_predictions_ratio"]
+            signal_lines.append(f"- Ambiguous predictions (margin <20%): {ambiguous_ratio:.1%}")
+            if ambiguous_ratio > 0.20:
+                signal_lines.append("  WARNING: High proportion of ambiguous predictions - class boundaries may not be well-defined")
+        
+        # Threshold analysis (binary classification)
+        if signals.get("auc_roc") is not None:
+            signal_lines.append(f"- AUC-ROC: {signals['auc_roc']:.3f}")
+        if signals.get("auc_pr") is not None:
+            signal_lines.append(f"- AUC-PR: {signals['auc_pr']:.3f}")
+        if signals.get("optimal_threshold") is not None:
+            optimal = signals["optimal_threshold"]
+            signal_lines.append(f"- Optimal threshold: {optimal:.3f}")
+            if abs(optimal - 0.5) > 0.15:
+                signal_lines.append(f"  WARNING: Optimal threshold ({optimal:.2f}) differs significantly from default (0.5)")
+        
+        # Per-class probability analysis
+        if signals.get("per_class_proba_mean"):
+            signal_lines.append("- Per-class probability statistics:")
+            for cls, mean_proba in signals["per_class_proba_mean"].items():
+                std_proba = signals.get("per_class_proba_std", {}).get(cls, 0)
+                signal_lines.append(f"    - Class {cls}: mean={mean_proba:.1%}, std={std_proba:.1%}")
+    
     # Define failure modes
     failure_modes = """
 Available failure modes to consider:
@@ -774,6 +837,11 @@ Available failure modes to consider:
 5. feature_redundancy - Highly correlated or duplicate features
 6. label_noise - Incorrect or noisy target labels
 7. data_leakage - Information from validation leaking into training
+8. poor_calibration - Predicted probabilities do not match true likelihoods (classification only)
+9. low_confidence_predictions - Model systematically produces low-confidence predictions (classification only)
+10. ambiguous_class_boundaries - Classes are not well-separated in probability space (classification only)
+11. suboptimal_threshold - Default 0.5 threshold is not optimal for binary classification (classification only)
+12. confidence_accuracy_mismatch - Model confidence does not correlate with prediction accuracy (classification only)
 """
     
     prompt = f"""Analyze these model diagnostic signals and identify potential failure modes.
@@ -858,6 +926,23 @@ def _build_summary_prompt(
         signal_lines.append(f"- CV mean: {signals['cv_mean']:.1%}")
     if signals.get("cv_std") is not None:
         signal_lines.append(f"- CV std: {signals['cv_std']:.1%}")
+    
+    # Probability prediction signals (classification only)
+    if task == "classification" and signals.get("has_probability_outputs"):
+        signal_lines.append("\n**Probability Prediction Analysis:**")
+        
+        if signals.get("proba_mean") is not None:
+            signal_lines.append(f"- Mean confidence: {signals['proba_mean']:.1%}")
+        if signals.get("proba_calibration_error") is not None:
+            signal_lines.append(f"- Calibration error: {signals['proba_calibration_error']:.1%}")
+        if signals.get("high_confidence_ratio") is not None:
+            signal_lines.append(f"- High confidence predictions: {signals['high_confidence_ratio']:.1%}")
+        if signals.get("ambiguous_predictions_ratio") is not None:
+            signal_lines.append(f"- Ambiguous predictions: {signals['ambiguous_predictions_ratio']:.1%}")
+        if signals.get("auc_roc") is not None:
+            signal_lines.append(f"- AUC-ROC: {signals['auc_roc']:.3f}")
+        if signals.get("optimal_threshold") is not None:
+            signal_lines.append(f"- Optimal threshold: {signals['optimal_threshold']:.3f}")
     
     # Format hypotheses
     hypothesis_lines = []
