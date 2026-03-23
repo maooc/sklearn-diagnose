@@ -215,6 +215,69 @@ class MockLLMClient(LLMClient):
                 evidence=leakage_evidence
             ))
         
+        # Check for probability calibration issues
+        has_prob_preds = signals.get("has_probability_predictions", False)
+        if task == "classification" and has_prob_preds:
+            prob_evidence = []
+            prob_confidence = 0.0
+            prob_severity = "low"
+            
+            # Expected Calibration Error
+            ece = signals.get("expected_calibration_error")
+            if ece is not None:
+                if ece >= 0.15:
+                    prob_evidence.append(f"Expected Calibration Error (ECE) of {ece:.1%} is severe (>15%)")
+                    prob_confidence = max(prob_confidence, 0.80)
+                    prob_severity = "high"
+                elif ece >= 0.10:
+                    prob_evidence.append(f"Expected Calibration Error (ECE) of {ece:.1%} is moderate (>10%)")
+                    prob_confidence = max(prob_confidence, 0.60)
+                    prob_severity = "medium"
+                elif ece >= 0.05:
+                    prob_evidence.append(f"Expected Calibration Error (ECE) of {ece:.1%} suggests mild miscalibration")
+                    prob_confidence = max(prob_confidence, 0.40)
+            
+            # Low confidence predictions
+            low_conf_ratio = signals.get("low_confidence_ratio")
+            if low_conf_ratio is not None and low_conf_ratio >= 0.30:
+                prob_evidence.append(f"{low_conf_ratio:.1%} of predictions have low confidence (<70%)")
+                prob_confidence = min(0.90, prob_confidence + 0.20)
+                prob_severity = "medium" if prob_confidence > 0.5 else prob_severity
+            
+            # Very low confidence predictions
+            very_low_conf_ratio = signals.get("very_low_confidence_ratio")
+            if very_low_conf_ratio is not None and very_low_conf_ratio >= 0.15:
+                prob_evidence.append(f"{very_low_conf_ratio:.1%} of predictions have very low confidence (<50%)")
+                prob_confidence = min(0.95, prob_confidence + 0.15)
+            
+            # Overconfidence
+            overconf_ratio = signals.get("overconfidence_ratio")
+            if overconf_ratio is not None and overconf_ratio >= 0.40:
+                prob_evidence.append(f"Model is overconfident on {overconf_ratio:.1%} of predictions")
+                prob_confidence = min(0.95, prob_confidence + 0.20)
+                prob_severity = "high" if prob_confidence > 0.6 else prob_severity
+            
+            # Poor class separation
+            separation_score = signals.get("class_separation_score")
+            if separation_score is not None and separation_score <= 0.30:
+                prob_evidence.append(f"Poor class separation (score: {separation_score:.2f})")
+                prob_confidence = min(0.85, prob_confidence + 0.15)
+            
+            # Low confidence margin
+            conf_margin = signals.get("mean_confidence_margin")
+            if conf_margin is not None and conf_margin < 0.20:
+                prob_evidence.append(f"Low confidence margin ({conf_margin:.2f}) between top predictions")
+                prob_confidence = min(0.80, prob_confidence + 0.10)
+            
+            if prob_evidence:
+                prob_evidence.append("Consider applying probability calibration techniques")
+                hypotheses.append(Hypothesis(
+                    name=FailureMode.PROBABILITY_CALIBRATION,
+                    confidence=round(min(0.95, prob_confidence), 2),
+                    severity=prob_severity,
+                    evidence=prob_evidence
+                ))
+        
         return hypotheses
     
     def generate_recommendations(
@@ -281,8 +344,8 @@ class MockLLMClient(LLMClient):
             for h in sorted(hypotheses, key=lambda x: x.confidence, reverse=True)[:3]:
                 lines.append(f"- **{h.name.value.replace('_', ' ').title()}** ({h.confidence:.0%} confidence, {h.severity} severity)")
                 
-                # For feature redundancy, class imbalance, and data leakage, show all evidence (includes detailed info)
-                if h.name in (FailureMode.FEATURE_REDUNDANCY, FailureMode.CLASS_IMBALANCE, FailureMode.DATA_LEAKAGE):
+                # For feature redundancy, class imbalance, data leakage, and probability calibration, show all evidence (includes detailed info)
+                if h.name in (FailureMode.FEATURE_REDUNDANCY, FailureMode.CLASS_IMBALANCE, FailureMode.DATA_LEAKAGE, FailureMode.PROBABILITY_CALIBRATION):
                     for ev in h.evidence:
                         lines.append(f"  - {ev}")
                 elif h.evidence:

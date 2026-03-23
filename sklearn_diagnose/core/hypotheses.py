@@ -63,6 +63,20 @@ THRESHOLDS = {
     
     # Data quantity
     "sample_to_feature_ratio_low": 10,  # Less than 10 samples per feature
+    
+    # Probability calibration
+    "ece_mild": 0.05,                # 5% expected calibration error
+    "ece_moderate": 0.10,            # 10% ECE
+    "ece_severe": 0.15,              # 15% ECE
+    "low_confidence_ratio_high": 0.30, # 30% of predictions have low confidence
+    "overconfidence_ratio_high": 0.40, # 40% of predictions are overconfident
+    "separation_score_low": 0.30,    # Poor class separation margin
+    
+    # Threshold analysis
+    "threshold_sensitivity_high": 0.20,  # 20% predictions change with ±0.1 threshold
+    "threshold_sensitivity_very_high": 0.40,  # 40% predictions change
+    "score_stability_index_low": 0.15,  # Low stability index (many near threshold)
+    "threshold_optimization_gap": 0.10,  # 10% improvement from threshold optimization
 }
 
 
@@ -93,6 +107,7 @@ def generate_hypotheses(
     hypotheses.extend(_check_feature_redundancy(signals))
     hypotheses.extend(_check_label_noise(signals, task))
     hypotheses.extend(_check_data_leakage(signals))
+    hypotheses.extend(_check_probability_calibration(signals, task))
     
     # Filter out low-confidence hypotheses
     # (keep even low confidence for transparency, but mark appropriately)
@@ -496,6 +511,153 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
     if confidence >= 0.30 and evidence:
         hypotheses.append(Hypothesis(
             name=FailureMode.DATA_LEAKAGE,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+    
+    return hypotheses
+
+
+def _check_probability_calibration(signals: Signals, task: TaskType) -> List[Hypothesis]:
+    """
+    Check for probability calibration issues in classification models.
+    
+    Probability calibration problems include:
+    - High Expected Calibration Error (ECE)
+    - Systematic overconfidence or underconfidence
+    - Low prediction confidence on many samples
+    - Poor class separation (low margin between top probabilities)
+    """
+    if task != TaskType.CLASSIFICATION or not signals.has_probability_predictions:
+        return []
+    
+    hypotheses = []
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+    
+    # Primary: Expected Calibration Error (ECE)
+    if signals.expected_calibration_error is not None:
+        ece = signals.expected_calibration_error
+        
+        if ece >= THRESHOLDS["ece_severe"]:
+            confidence = min(0.90, 0.6 + ece * 2)
+            severity = "high"
+            evidence.append(
+                f"Expected Calibration Error (ECE) of {ece:.1%} is severe (>{THRESHOLDS['ece_severe']:.0%})"
+            )
+        elif ece >= THRESHOLDS["ece_moderate"]:
+            confidence = min(0.70, 0.4 + ece * 2)
+            severity = "medium"
+            evidence.append(
+                f"Expected Calibration Error (ECE) of {ece:.1%} is moderate"
+            )
+        elif ece >= THRESHOLDS["ece_mild"]:
+            confidence = min(0.50, 0.2 + ece * 2)
+            severity = "low"
+            evidence.append(
+                f"Expected Calibration Error (ECE) of {ece:.1%} suggests mild miscalibration"
+            )
+    
+    # Supporting: Overconfidence or underconfidence patterns
+    if signals.overconfidence_ratio is not None:
+        overconf_ratio = signals.overconfidence_ratio
+        if overconf_ratio >= THRESHOLDS["overconfidence_ratio_high"]:
+            confidence = min(0.95, confidence + 0.20)
+            severity = "high" if confidence > 0.6 else severity
+            evidence.append(
+                f"Model is overconfident on {overconf_ratio:.1%} of predictions"
+            )
+        elif overconf_ratio >= 0.20:
+            confidence = min(0.80, confidence + 0.10)
+            evidence.append(
+                f"Model shows some overconfidence on {overconf_ratio:.1%} of predictions"
+            )
+    
+    if signals.underconfidence_ratio is not None and signals.underconfidence_ratio >= 0.30:
+        confidence = min(0.85, confidence + 0.15)
+        evidence.append(
+            f"Model is underconfident on {signals.underconfidence_ratio:.1%} of predictions"
+        )
+    
+    # Supporting: Low confidence predictions
+    if signals.low_confidence_ratio is not None:
+        low_conf_ratio = signals.low_confidence_ratio
+        if low_conf_ratio >= THRESHOLDS["low_confidence_ratio_high"]:
+            confidence = min(0.85, confidence + 0.15)
+            severity = "medium" if confidence > 0.5 else severity
+            evidence.append(
+                f"{low_conf_ratio:.1%} of predictions have low confidence (<70%)"
+            )
+    
+    # Supporting: Very low confidence predictions
+    if signals.very_low_confidence_ratio is not None and signals.very_low_confidence_ratio >= 0.15:
+        confidence = min(0.90, confidence + 0.10)
+        evidence.append(
+            f"{signals.very_low_confidence_ratio:.1%} of predictions have very low confidence (<50%)"
+        )
+    
+    # Supporting: Poor class separation
+    if signals.class_separation_score is not None:
+        separation = signals.class_separation_score
+        if separation <= THRESHOLDS["separation_score_low"]:
+            confidence = min(0.80, confidence + 0.15)
+            evidence.append(
+                f"Poor class separation (score: {separation:.2f}) - model has difficulty distinguishing between classes"
+            )
+    
+    # Supporting: Confidence margin
+    if signals.mean_confidence_margin is not None and signals.mean_confidence_margin < 0.20:
+        confidence = min(0.75, confidence + 0.10)
+        evidence.append(
+            f"Low confidence margin ({signals.mean_confidence_margin:.2f}) between top predictions"
+        )
+    
+    # Supporting: Threshold sensitivity analysis
+    if signals.threshold_sensitivity_high is not None:
+        sensitivity = signals.threshold_sensitivity_high
+        if sensitivity >= THRESHOLDS["threshold_sensitivity_very_high"]:
+            confidence = min(0.90, confidence + 0.20)
+            severity = "high"
+            evidence.append(
+                f"Very high threshold sensitivity: {sensitivity:.1%} of predictions change with ±0.1 threshold adjustment"
+            )
+        elif sensitivity >= THRESHOLDS["threshold_sensitivity_high"]:
+            confidence = min(0.75, confidence + 0.15)
+            severity = "medium" if severity == "low" else severity
+            evidence.append(
+                f"High threshold sensitivity: {sensitivity:.1%} of predictions change with ±0.1 threshold adjustment"
+            )
+    
+    # Supporting: Score stability index
+    if signals.score_stability_index is not None:
+        stability = signals.score_stability_index
+        if stability <= THRESHOLDS["score_stability_index_low"]:
+            confidence = min(0.80, confidence + 0.15)
+            severity = "medium" if severity == "low" else severity
+            evidence.append(
+                f"Low score stability index ({stability:.2f}) - many predictions are near the decision boundary"
+            )
+    
+    # Supporting: Threshold optimization opportunity
+    if signals.threshold_analysis is not None:
+        try:
+            default_f1 = signals.threshold_analysis.get("default_metrics", {}).get("f1", 0)
+            best_f1 = signals.threshold_analysis.get("optimal_metrics", {}).get("best_f1", 0)
+            if default_f1 > 0:
+                improvement = (best_f1 - default_f1) / default_f1
+                if improvement >= THRESHOLDS["threshold_optimization_gap"]:
+                    confidence = min(0.70, confidence + 0.10)
+                    evidence.append(
+                        f"Significant threshold optimization opportunity: F1 score could improve by {improvement:.1%} (from {default_f1:.2f} to {best_f1:.2f})"
+                    )
+        except Exception:
+            pass
+    
+    if confidence >= 0.25 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.PROBABILITY_CALIBRATION,
             confidence=round(confidence, 2),
             evidence=evidence,
             severity=severity

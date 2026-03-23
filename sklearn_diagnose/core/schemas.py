@@ -29,6 +29,7 @@ class FailureMode(str, Enum):
     FEATURE_REDUNDANCY = "feature_redundancy"
     CLASS_IMBALANCE = "class_imbalance"
     DATA_LEAKAGE = "data_leakage"
+    PROBABILITY_CALIBRATION = "probability_calibration"
 
 
 class ConfidenceLevel(str, Enum):
@@ -143,6 +144,39 @@ class Signals:
     per_class_recall: Optional[Dict[Any, float]] = None
     per_class_precision: Optional[Dict[Any, float]] = None
     confusion_matrix: Optional[np.ndarray] = None
+    
+    # Probability prediction quality (classification only)
+    has_probability_predictions: bool = False
+    mean_prediction_confidence: Optional[float] = None
+    median_prediction_confidence: Optional[float] = None
+    min_prediction_confidence: Optional[float] = None
+    max_prediction_confidence: Optional[float] = None
+    prediction_confidence_std: Optional[float] = None
+    low_confidence_threshold: float = 0.5
+    low_confidence_ratio: Optional[float] = None
+    very_low_confidence_ratio: Optional[float] = None
+    
+    # Class separation quality
+    class_separation_score: Optional[float] = None
+    mean_max_class_probability: Optional[float] = None
+    mean_second_max_class_probability: Optional[float] = None
+    mean_confidence_margin: Optional[float] = None  # max_prob - second_max_prob
+    
+    # Calibration signals
+    expected_calibration_error: Optional[float] = None
+    max_calibration_error: Optional[float] = None
+    overconfidence_ratio: Optional[float] = None
+    underconfidence_ratio: Optional[float] = None
+    
+    # Threshold analysis signals (classification with probability)
+    default_threshold: float = 0.5
+    threshold_analysis: Optional[Dict[str, Any]] = None
+    optimal_threshold_precision: Optional[float] = None
+    optimal_threshold_recall: Optional[float] = None
+    optimal_threshold_f1: Optional[float] = None
+    score_stability_index: Optional[float] = None  # Measures how score changes with threshold
+    threshold_sensitivity_high: Optional[float] = None  # % change in predictions at ±0.1 threshold
+    threshold_sensitivity_low: Optional[float] = None   # % change in predictions at ±0.05 threshold
     
     # Feature analysis
     feature_correlations: Optional[np.ndarray] = None
