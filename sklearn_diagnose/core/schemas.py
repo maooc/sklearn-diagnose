@@ -29,6 +29,9 @@ class FailureMode(str, Enum):
     FEATURE_REDUNDANCY = "feature_redundancy"
     CLASS_IMBALANCE = "class_imbalance"
     DATA_LEAKAGE = "data_leakage"
+    POOR_CALIBRATION = "poor_calibration"
+    LOW_CONFIDENCE = "low_confidence"
+    POOR_CLASS_SEPARATION = "poor_class_separation"
 
 
 class ConfidenceLevel(str, Enum):
@@ -143,6 +146,24 @@ class Signals:
     per_class_recall: Optional[Dict[Any, float]] = None
     per_class_precision: Optional[Dict[Any, float]] = None
     confusion_matrix: Optional[np.ndarray] = None
+    
+    # Probability prediction diagnostics (classification)
+    has_probability_predictions: bool = False
+    avg_predicted_probability: Optional[float] = None
+    probability_entropy: Optional[float] = None
+    brier_score: Optional[float] = None
+    high_confidence_ratio: Optional[float] = None
+    low_confidence_ratio: Optional[float] = None
+    avg_confidence_correct: Optional[float] = None
+    avg_confidence_incorrect: Optional[float] = None
+    confidence_gap: Optional[float] = None
+    class_separation_score: Optional[float] = None
+    per_class_avg_probability: Optional[Dict[Any, float]] = None
+    per_class_probability_std: Optional[Dict[Any, float]] = None
+    threshold_metrics: Optional[List[Dict[str, float]]] = None
+    optimal_threshold: Optional[float] = None
+    optimal_threshold_f1: Optional[float] = None
+    calibration_error: Optional[float] = None
     
     # Feature analysis
     feature_correlations: Optional[np.ndarray] = None

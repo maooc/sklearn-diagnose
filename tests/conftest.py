@@ -215,6 +215,67 @@ class MockLLMClient(LLMClient):
                 evidence=leakage_evidence
             ))
         
+        # Check for poor calibration
+        calibration_error = signals.get("calibration_error")
+        brier_score = signals.get("brier_score")
+        confidence_gap = signals.get("confidence_gap")
+        
+        if calibration_error is not None and calibration_error > 0.15:
+            calibration_evidence = [
+                f"Calibration error (ECE) of {calibration_error:.1%} indicates poor probability calibration"
+            ]
+            
+            if brier_score is not None and brier_score > 0.20:
+                calibration_evidence.append(f"Brier score of {brier_score:.3f} confirms poor probability quality")
+            
+            if confidence_gap is not None and confidence_gap < 0.05:
+                calibration_evidence.append(f"Small confidence gap ({confidence_gap:.1%}) between correct and incorrect predictions")
+            
+            hypotheses.append(Hypothesis(
+                name=FailureMode.POOR_CALIBRATION,
+                confidence=min(0.85, 0.5 + calibration_error),
+                severity="high" if calibration_error > 0.25 else "medium",
+                evidence=calibration_evidence
+            ))
+        
+        # Check for low confidence
+        avg_confidence = signals.get("avg_predicted_probability")
+        low_confidence_ratio = signals.get("low_confidence_ratio")
+        high_confidence_ratio = signals.get("high_confidence_ratio")
+        
+        if avg_confidence is not None and avg_confidence < 0.60:
+            confidence_evidence = [f"Average prediction confidence is low ({avg_confidence:.1%})"]
+            
+            if low_confidence_ratio is not None and low_confidence_ratio > 0.30:
+                confidence_evidence.append(f"{low_confidence_ratio:.1%} of predictions have low confidence (<60%)")
+            
+            if high_confidence_ratio is not None and high_confidence_ratio < 0.30:
+                confidence_evidence.append(f"Only {high_confidence_ratio:.1%} of predictions have high confidence (>=90%)")
+            
+            hypotheses.append(Hypothesis(
+                name=FailureMode.LOW_CONFIDENCE,
+                confidence=min(0.80, 0.5 + (0.60 - avg_confidence)),
+                severity="medium",
+                evidence=confidence_evidence
+            ))
+        
+        # Check for poor class separation
+        class_separation_score = signals.get("class_separation_score")
+        optimal_threshold = signals.get("optimal_threshold")
+        
+        if class_separation_score is not None and class_separation_score < 0.70:
+            separation_evidence = [f"AUC-ROC of {class_separation_score:.1%} indicates poor class separation"]
+            
+            if optimal_threshold is not None and abs(optimal_threshold - 0.5) > 0.15:
+                separation_evidence.append(f"Optimal threshold ({optimal_threshold:.2f}) differs from default 0.5")
+            
+            hypotheses.append(Hypothesis(
+                name=FailureMode.POOR_CLASS_SEPARATION,
+                confidence=min(0.85, 0.5 + (0.70 - class_separation_score)),
+                severity="high" if class_separation_score < 0.60 else "medium",
+                evidence=separation_evidence
+            ))
+        
         return hypotheses
     
     def generate_recommendations(
@@ -282,7 +343,8 @@ class MockLLMClient(LLMClient):
                 lines.append(f"- **{h.name.value.replace('_', ' ').title()}** ({h.confidence:.0%} confidence, {h.severity} severity)")
                 
                 # For feature redundancy, class imbalance, and data leakage, show all evidence (includes detailed info)
-                if h.name in (FailureMode.FEATURE_REDUNDANCY, FailureMode.CLASS_IMBALANCE, FailureMode.DATA_LEAKAGE):
+                if h.name in (FailureMode.FEATURE_REDUNDANCY, FailureMode.CLASS_IMBALANCE, FailureMode.DATA_LEAKAGE,
+                              FailureMode.POOR_CALIBRATION, FailureMode.LOW_CONFIDENCE, FailureMode.POOR_CLASS_SEPARATION):
                     for ev in h.evidence:
                         lines.append(f"  - {ev}")
                 elif h.evidence:

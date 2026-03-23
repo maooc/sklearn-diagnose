@@ -63,6 +63,17 @@ THRESHOLDS = {
     
     # Data quantity
     "sample_to_feature_ratio_low": 10,  # Less than 10 samples per feature
+    
+    # Probability prediction quality
+    "calibration_error_high": 0.15,     # ECE above this indicates poor calibration
+    "calibration_error_severe": 0.25,   # ECE above this is severe miscalibration
+    "avg_confidence_low": 0.60,         # Average confidence below this is low
+    "confidence_gap_low": 0.05,         # Confidence gap below this indicates poor discrimination
+    "class_separation_low": 0.70,       # AUC below this indicates poor class separation
+    "class_separation_poor": 0.60,      # AUC below this is very poor separation
+    "brier_score_high": 0.20,           # Brier score above this indicates poor probability quality
+    "low_confidence_ratio_high": 0.30,  # More than 30% low confidence predictions
+    "high_confidence_ratio_low": 0.30,  # Less than 30% high confidence predictions
 }
 
 
@@ -93,6 +104,12 @@ def generate_hypotheses(
     hypotheses.extend(_check_feature_redundancy(signals))
     hypotheses.extend(_check_label_noise(signals, task))
     hypotheses.extend(_check_data_leakage(signals))
+    
+    # Check probability prediction quality (classification only)
+    if task == TaskType.CLASSIFICATION:
+        hypotheses.extend(_check_poor_calibration(signals))
+        hypotheses.extend(_check_low_confidence(signals))
+        hypotheses.extend(_check_poor_class_separation(signals))
     
     # Filter out low-confidence hypotheses
     # (keep even low confidence for transparency, but mark appropriately)
@@ -496,6 +513,216 @@ def _check_data_leakage(signals: Signals) -> List[Hypothesis]:
     if confidence >= 0.30 and evidence:
         hypotheses.append(Hypothesis(
             name=FailureMode.DATA_LEAKAGE,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+    
+    return hypotheses
+
+
+def _check_poor_calibration(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for poor probability calibration.
+    
+    Poor calibration is characterized by:
+    - High Expected Calibration Error (ECE)
+    - Predicted probabilities not matching actual accuracy
+    - Overconfident or underconfident predictions
+    """
+    hypotheses = []
+    
+    if not signals.has_probability_predictions:
+        return hypotheses
+    
+    if signals.calibration_error is None:
+        return hypotheses
+    
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+    
+    ece = signals.calibration_error
+    
+    if ece >= THRESHOLDS["calibration_error_severe"]:
+        confidence = min(0.90, 0.6 + ece)
+        severity = "high"
+        evidence.append(f"Calibration error (ECE) of {ece:.1%} indicates severe miscalibration")
+    elif ece >= THRESHOLDS["calibration_error_high"]:
+        confidence = min(0.75, 0.4 + ece)
+        severity = "medium"
+        evidence.append(f"Calibration error (ECE) of {ece:.1%} indicates poor probability calibration")
+    
+    # Supporting evidence from Brier score
+    if signals.brier_score is not None and signals.brier_score > THRESHOLDS["brier_score_high"]:
+        confidence = min(0.95, confidence + 0.10)
+        evidence.append(f"Brier score of {signals.brier_score:.3f} confirms poor probability quality")
+    
+    # Check for overconfidence pattern
+    if signals.avg_confidence_correct is not None and signals.avg_confidence_incorrect is not None:
+        if signals.confidence_gap is not None and signals.confidence_gap < THRESHOLDS["confidence_gap_low"]:
+            confidence = min(0.95, confidence + 0.15)
+            evidence.append(
+                f"Small confidence gap ({signals.confidence_gap:.1%}) between correct and incorrect predictions"
+            )
+    
+    if confidence >= 0.30 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.POOR_CALIBRATION,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+    
+    return hypotheses
+
+
+def _check_low_confidence(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for systematically low confidence predictions.
+    
+    Low confidence is characterized by:
+    - Low average predicted probability
+    - High proportion of low-confidence predictions
+    - Model uncertain about its predictions
+    """
+    hypotheses = []
+    
+    if not signals.has_probability_predictions:
+        return hypotheses
+    
+    if signals.avg_predicted_probability is None:
+        return hypotheses
+    
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+    
+    avg_conf = signals.avg_predicted_probability
+    
+    # Check average confidence
+    if avg_conf < THRESHOLDS["avg_confidence_low"]:
+        confidence = min(0.80, 0.5 + (THRESHOLDS["avg_confidence_low"] - avg_conf))
+        severity = "medium"
+        evidence.append(f"Average prediction confidence is low ({avg_conf:.1%})")
+    
+    # Check low confidence ratio
+    if signals.low_confidence_ratio is not None:
+        if signals.low_confidence_ratio > THRESHOLDS["low_confidence_ratio_high"]:
+            confidence = min(0.85, confidence + 0.15)
+            evidence.append(
+                f"{signals.low_confidence_ratio:.1%} of predictions have low confidence (<60%)"
+            )
+            severity = "medium" if confidence < 0.70 else "high"
+    
+    # Check high confidence ratio (inverse signal)
+    if signals.high_confidence_ratio is not None:
+        if signals.high_confidence_ratio < THRESHOLDS["high_confidence_ratio_low"]:
+            confidence = min(0.80, confidence + 0.10)
+            evidence.append(
+                f"Only {signals.high_confidence_ratio:.1%} of predictions have high confidence (>=90%)"
+            )
+    
+    # High entropy as supporting evidence
+    if signals.probability_entropy is not None:
+        max_entropy = np.log(2)  # Binary classification max entropy
+        if signals.probability_entropy > 0.6 * max_entropy:
+            confidence = min(0.85, confidence + 0.10)
+            evidence.append(
+                f"High prediction entropy ({signals.probability_entropy:.3f}) indicates uncertainty"
+            )
+    
+    if confidence >= 0.30 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.LOW_CONFIDENCE,
+            confidence=round(confidence, 2),
+            evidence=evidence,
+            severity=severity
+        ))
+    
+    return hypotheses
+
+
+def _check_poor_class_separation(signals: Signals) -> List[Hypothesis]:
+    """
+    Check for poor class separation ability.
+    
+    Poor class separation is characterized by:
+    - Low AUC-ROC score
+    - Similar probability distributions across classes
+    - Difficulty distinguishing between classes
+    """
+    hypotheses = []
+    
+    if not signals.has_probability_predictions:
+        return hypotheses
+    
+    if signals.class_separation_score is None:
+        return hypotheses
+    
+    evidence = []
+    confidence = 0.0
+    severity = "low"
+    
+    auc = signals.class_separation_score
+    
+    if auc < THRESHOLDS["class_separation_poor"]:
+        confidence = min(0.90, 0.7 + (THRESHOLDS["class_separation_poor"] - auc))
+        severity = "high"
+        evidence.append(f"AUC-ROC of {auc:.1%} indicates very poor class separation")
+    elif auc < THRESHOLDS["class_separation_low"]:
+        confidence = min(0.75, 0.4 + (THRESHOLDS["class_separation_low"] - auc) * 2)
+        severity = "medium"
+        evidence.append(f"AUC-ROC of {auc:.1%} indicates poor class separation")
+    
+    # Check per-class probability distributions
+    if signals.per_class_avg_probability is not None and len(signals.per_class_avg_probability) >= 2:
+        probs = list(signals.per_class_avg_probability.values())
+        prob_spread = max(probs) - min(probs)
+        
+        if prob_spread < 0.15:
+            confidence = min(0.85, confidence + 0.15)
+            evidence.append(
+                f"Similar average probabilities across classes (spread: {prob_spread:.1%})"
+            )
+    
+    # Check per-class probability std (high variance within classes)
+    if signals.per_class_probability_std is not None:
+        avg_std = np.mean(list(signals.per_class_probability_std.values()))
+        if avg_std > 0.25:
+            confidence = min(0.80, confidence + 0.10)
+            evidence.append(
+                f"High variance in per-class probabilities (avg std: {avg_std:.1%})"
+            )
+    
+    # Check threshold metrics for threshold sensitivity
+    if signals.threshold_metrics is not None and len(signals.threshold_metrics) > 0:
+        f1_scores = [m['f1'] for m in signals.threshold_metrics]
+        f1_range = max(f1_scores) - min(f1_scores)
+        
+        if f1_range > 0.20:
+            confidence = min(0.80, confidence + 0.10)
+            evidence.append(
+                f"F1 score varies significantly across thresholds (range: {f1_range:.1%})"
+            )
+        
+        # Check if optimal threshold differs significantly from 0.5
+        if signals.optimal_threshold is not None:
+            threshold_diff = abs(signals.optimal_threshold - 0.5)
+            if threshold_diff > 0.15:
+                evidence.append(
+                    f"Optimal threshold ({signals.optimal_threshold:.2f}) differs from default 0.5"
+                )
+                if signals.optimal_threshold_f1 is not None and signals.val_score is not None:
+                    improvement = signals.optimal_threshold_f1 - signals.val_score
+                    if improvement > 0.05:
+                        evidence.append(
+                            f"Using optimal threshold could improve F1 by {improvement:.1%}"
+                        )
+    
+    if confidence >= 0.30 and evidence:
+        hypotheses.append(Hypothesis(
+            name=FailureMode.POOR_CLASS_SEPARATION,
             confidence=round(confidence, 2),
             evidence=evidence,
             severity=severity

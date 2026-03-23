@@ -1023,5 +1023,272 @@ class TestRealLLMIntegration:
         _set_global_client(None)
 
 
+class TestProbabilityDiagnostics:
+    """Test probability prediction diagnostics functionality."""
+    
+    def test_probability_signals_extracted_for_classifier(self, classification_data):
+        """Test that probability signals are extracted for classifiers with predict_proba."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        # Check that probability signals are populated
+        assert report.signals.has_probability_predictions is True
+        assert report.signals.avg_predicted_probability is not None
+        assert report.signals.brier_score is not None
+        assert report.signals.class_separation_score is not None
+    
+    def test_probability_signals_with_pipeline(self, classification_data):
+        """Test probability signals work with Pipeline."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", LogisticRegression(random_state=42))
+        ])
+        pipeline.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=pipeline,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        assert report.signals.has_probability_predictions is True
+        assert report.signals.brier_score is not None
+    
+    def test_probability_signals_with_cv_results(self, classification_data):
+        """Test probability signals with cross-validation results."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        cv_results = cross_validate(
+            model, X_train, y_train,
+            cv=5, return_train_score=True
+        )
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)  # Include validation set for probability signals
+            },
+            task="classification",
+            cv_results=cv_results
+        )
+        
+        # Probability signals should still be extracted
+        assert report.signals.has_probability_predictions is True
+    
+    def test_probability_signals_graceful_degradation_without_proba(self):
+        """Test that models without predict_proba degrade gracefully."""
+        from sklearn.svm import LinearSVC
+        
+        X, y = make_classification(n_samples=200, n_features=10, random_state=42)
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        model = LinearSVC(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        # Should not have probability predictions
+        assert report.signals.has_probability_predictions is False
+        # But should still work
+        assert report is not None
+        assert report.signals.train_score is not None
+    
+    def test_calibration_error_detection(self):
+        """Test detection of poor calibration."""
+        X, y = make_classification(n_samples=500, n_features=20, random_state=42)
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Random forest can be overconfident
+        model = RandomForestClassifier(n_estimators=10, max_depth=3, random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        # Check calibration error is computed
+        assert report.signals.calibration_error is not None
+        assert report.signals.brier_score is not None
+    
+    def test_threshold_metrics_computed(self, classification_data):
+        """Test that threshold metrics are computed for binary classification."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        # Threshold metrics should be computed for binary classification
+        assert report.signals.threshold_metrics is not None
+        assert len(report.signals.threshold_metrics) > 0
+        
+        # Each threshold metric should have required fields
+        for tm in report.signals.threshold_metrics:
+            assert 'threshold' in tm
+            assert 'precision' in tm
+            assert 'recall' in tm
+            assert 'f1' in tm
+    
+    def test_optimal_threshold_computed(self, classification_data):
+        """Test that optimal threshold is computed."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        assert report.signals.optimal_threshold is not None
+        assert 0.0 <= report.signals.optimal_threshold <= 1.0
+        assert report.signals.optimal_threshold_f1 is not None
+    
+    def test_per_class_probability_stats(self, classification_data):
+        """Test per-class probability statistics."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        assert report.signals.per_class_avg_probability is not None
+        assert report.signals.per_class_probability_std is not None
+    
+    def test_confidence_metrics(self, classification_data):
+        """Test confidence-related metrics."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        assert report.signals.high_confidence_ratio is not None
+        assert report.signals.low_confidence_ratio is not None
+        assert report.signals.avg_confidence_correct is not None
+        assert report.signals.avg_confidence_incorrect is not None
+        assert report.signals.confidence_gap is not None
+    
+    def test_probability_signals_in_to_dict(self, classification_data):
+        """Test that probability signals are included in to_dict output."""
+        X_train, X_val, y_train, y_val = classification_data
+        
+        model = LogisticRegression(random_state=42)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        result = report.to_dict()
+        signals = result.get('signals', {})
+        
+        # Check probability signals are in the dict
+        assert 'has_probability_predictions' in signals
+        assert 'brier_score' in signals
+        assert 'class_separation_score' in signals
+    
+    def test_multiclass_probability_signals(self):
+        """Test probability signals for multiclass classification."""
+        X, y = make_classification(
+            n_samples=300,
+            n_features=20,
+            n_classes=3,
+            n_clusters_per_class=1,
+            random_state=42
+        )
+        
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        model = LogisticRegression(random_state=42, max_iter=500)
+        model.fit(X_train, y_train)
+        
+        report = diagnose(
+            estimator=model,
+            datasets={
+                "train": (X_train, y_train),
+                "val": (X_val, y_val)
+            },
+            task="classification"
+        )
+        
+        # Should have probability predictions
+        assert report.signals.has_probability_predictions is True
+        # Brier score should be computed
+        assert report.signals.brier_score is not None
+        # Class separation should be computed
+        assert report.signals.class_separation_score is not None
+        # Per-class stats should have 3 classes
+        assert len(report.signals.per_class_avg_probability) == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

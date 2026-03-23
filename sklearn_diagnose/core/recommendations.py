@@ -166,6 +166,79 @@ RECOMMENDATION_TEMPLATES: Dict[FailureMode, List[dict]] = {
             "rationale": "A truly independent holdout set provides unbiased performance estimates",
         },
     ],
+    
+    FailureMode.POOR_CALIBRATION: [
+        {
+            "action": "Apply probability calibration (Platt scaling or isotonic regression)",
+            "rationale": "Calibration methods adjust predicted probabilities to better match actual outcomes",
+        },
+        {
+            "action": "Use calibrated classifiers like LogisticRegression or Naive Bayes",
+            "rationale": "Some classifiers naturally produce better-calibrated probabilities",
+        },
+        {
+            "action": "Apply temperature scaling for neural networks",
+            "rationale": "Temperature scaling is a simple post-hoc calibration method for deep learning models",
+        },
+        {
+            "action": "Collect more training data to improve probability estimates",
+            "rationale": "More data helps the model learn better probability distributions",
+        },
+        {
+            "action": "Use ensemble methods like bagging or boosting",
+            "rationale": "Ensembles often produce better-calibrated probability estimates",
+        },
+    ],
+    
+    FailureMode.LOW_CONFIDENCE: [
+        {
+            "action": "Increase model complexity to capture more patterns",
+            "rationale": "A more complex model may learn to make more confident predictions",
+        },
+        {
+            "action": "Add more informative features through feature engineering",
+            "rationale": "Better features help the model make more confident decisions",
+        },
+        {
+            "action": "Reduce regularization strength",
+            "rationale": "Too much regularization can cause the model to be overly cautious",
+        },
+        {
+            "action": "Check for label noise or ambiguous samples",
+            "rationale": "Noisy labels can cause the model to be uncertain about predictions",
+        },
+        {
+            "action": "Review feature quality and data preprocessing",
+            "rationale": "Poor quality features or improper preprocessing can lead to uncertain predictions",
+        },
+    ],
+    
+    FailureMode.POOR_CLASS_SEPARATION: [
+        {
+            "action": "Engineer more discriminative features",
+            "rationale": "Better features that separate classes more clearly improve model performance",
+        },
+        {
+            "action": "Try different algorithms better suited to the data",
+            "rationale": "Some algorithms have better class separation properties for certain data types",
+        },
+        {
+            "action": "Apply dimensionality reduction to find separating subspaces",
+            "rationale": "PCA or LDA may reveal dimensions where classes separate better",
+        },
+        {
+            "action": "Adjust the decision threshold based on optimal threshold analysis",
+            "rationale": "The default 0.5 threshold may not be optimal for your specific data",
+        },
+        {
+            "action": "Address class imbalance if present",
+            "rationale": "Imbalanced classes can make separation difficult for the minority class",
+        },
+        {
+            "action": "Use ensemble methods like Random Forest or Gradient Boosting",
+            "rationale": "Ensembles often achieve better class separation than single models",
+        },
+    ],
 }
 
 
