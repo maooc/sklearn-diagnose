@@ -27,6 +27,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chatbot dependencies (FastAPI, Uvicorn, python-multipart) moved from optional to required
 - Test file renamed from `test_diagnose.py` to `unit_test_diagnose.py`
 
+## [0.3.0] - 2026-03-23
+
+### Added
+
+- **Probability Prediction Diagnosis (NEW)**: Comprehensive probability quality analysis for classification tasks
+  - **Probability Distribution Analysis**: Mean/median/min/max prediction confidence, confidence standard deviation
+  - **Confidence Quality Metrics**: Low confidence ratio (<70%), very low confidence ratio (<50%)
+  - **Class Separation Signals**: Class separation score, confidence margin between top-2 predictions
+  - **Calibration Metrics**: Expected Calibration Error (ECE), Max Calibration Error (MCE), overconfidence/underconfidence ratios
+  - **Threshold Sensitivity Analysis**: Prediction change rates at ±0.1 and ±0.05 threshold adjustments
+  - **Threshold Optimization**: Optimal thresholds for F1-score, precision, and recall optimization
+  - **Score Stability Index**: Measure of predictions clustered near the decision boundary
+- **New Failure Mode**: `PROBABILITY_CALIBRATION` for probability calibration and threshold-related issues
+- **Full Pipeline Integration**: Probability signals fully integrated into:
+  - Hypothesis generation (confidence scoring)
+  - Recommendation ranking (priority ordering)
+  - Summary generation (LLM evidence inclusion)
+- `Signals` dataclass extended with 15+ new probability-related fields
+- Comprehensive test suite (`tests/test_probability_diagnosis.py`) with 20+ tests covering:
+  - Probability signal extraction
+  - Threshold analysis
+  - Cross-validation scenarios
+  - Pipeline compatibility
+  - Graceful degradation for non-probability models
+- Demo script (`demo_probability_diagnosis.py`) demonstrating end-to-end probability diagnosis
+
+### Changed
+
+- **LLM Prompt Updates**: Enhanced system prompts include probability calibration guidelines and threshold analysis criteria
+- **Recommendation Templates**: Added threshold-specific recommendations (Platt scaling, isotonic regression, threshold moving, dynamic thresholding)
+- **Documentation**: Updated README with detailed probability diagnosis sections including capability matrix, supported scenarios, and verification methods
+
+### Compatibility
+
+| Scenario | Support Status |
+|----------|----------------|
+| Standard classifiers with `predict_proba` (LogisticRegression, RandomForest, etc.) | ✅ Full Support |
+| scikit-learn Pipeline with probability-enabled classifiers | ✅ Full Support |
+| Diagnosis with validation set (preferred) | ✅ Full Support |
+| Diagnosis with training data only | ✅ Full Support |
+| Cross-validation results with `probabilities` field | ✅ Full Support |
+| Multi-class classification (confidence/calibration only) | ⚠️ Partial Support |
+| Non-probability models (SVM without `probability=True`, etc.) | ✅ Graceful Degradation |
+
 ## [0.1.2] - 2025-01-28
 
 ### Added

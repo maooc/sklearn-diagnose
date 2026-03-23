@@ -32,7 +32,8 @@ HYPOTHESIS_SYSTEM_PROMPT = """You are an expert ML diagnostician agent. Your tas
 
 You will be given:
 1. Performance metrics (train score, validation score, CV scores, etc.)
-2. A list of possible failure modes to consider
+2. Probability prediction quality signals (for classification)
+3. A list of possible failure modes to consider
 
 For each failure mode you detect, you must provide:
 - failure_mode: The name of the failure mode (must be one of the provided options)
@@ -46,6 +47,14 @@ Guidelines:
 - Base your assessment solely on the provided signals
 - Provide specific, quantitative evidence when possible
 - A model can have multiple failure modes simultaneously
+- For probability calibration issues, consider:
+  * Expected Calibration Error (ECE) thresholds: >5% = mild, >10% = moderate, >15% = severe
+  * Low confidence ratio: >30% of predictions with <70% confidence is concerning
+  * Overconfidence ratio: >40% overconfident predictions is concerning
+  * Class separation score: <0.3 indicates poor discrimination between classes
+  * Threshold sensitivity: >20% of predictions changing with ±0.1 threshold adjustment indicates instability
+  * Score stability index: <0.15 indicates many predictions are near the decision boundary
+  * Threshold optimization gap: >10% improvement potential indicates significant optimization opportunity
 
 Output format (STRICT JSON - no markdown, no code blocks):
 {
@@ -106,6 +115,7 @@ Guidelines:
 - For feature_redundancy, include the specific correlated feature pairs
 - For class_imbalance, include class distribution and recall disparities
 - For data_leakage, include suspicious feature correlations and CV-holdout gaps
+- For probability_calibration, include ECE values, confidence statistics, class separation scores, and threshold sensitivity metrics
 
 Structure your response as:
 ## Diagnosis
@@ -723,6 +733,47 @@ def _build_hypothesis_prompt(signals: Dict[str, Any], task: str) -> str:
             signal_lines.append("- Per-class precision:")
             for class_label, precision in signals["per_class_precision"].items():
                 signal_lines.append(f"    - Class {class_label}: {precision:.1%}")
+        
+        # Probability prediction quality signals
+        if signals.get("has_probability_predictions", False):
+            signal_lines.append("\n- Probability Prediction Quality:")
+            
+            if signals.get("mean_prediction_confidence") is not None:
+                signal_lines.append(f"    - Mean prediction confidence: {signals['mean_prediction_confidence']:.1%}")
+            if signals.get("median_prediction_confidence") is not None:
+                signal_lines.append(f"    - Median prediction confidence: {signals['median_prediction_confidence']:.1%}")
+            if signals.get("prediction_confidence_std") is not None:
+                signal_lines.append(f"    - Confidence std deviation: {signals['prediction_confidence_std']:.1%}")
+            
+            # Low confidence ratios
+            if signals.get("low_confidence_ratio") is not None:
+                signal_lines.append(f"    - Low confidence predictions (<70%): {signals['low_confidence_ratio']:.1%}")
+            if signals.get("very_low_confidence_ratio") is not None:
+                signal_lines.append(f"    - Very low confidence predictions (<50%): {signals['very_low_confidence_ratio']:.1%}")
+            
+            # Class separation
+            if signals.get("class_separation_score") is not None:
+                signal_lines.append(f"    - Class separation score: {signals['class_separation_score']:.2f}")
+            if signals.get("mean_confidence_margin") is not None:
+                signal_lines.append(f"    - Mean confidence margin: {signals['mean_confidence_margin']:.2f}")
+            
+            # Calibration metrics
+            if signals.get("expected_calibration_error") is not None:
+                signal_lines.append(f"    - Expected Calibration Error (ECE): {signals['expected_calibration_error']:.1%}")
+            if signals.get("max_calibration_error") is not None:
+                signal_lines.append(f"    - Max Calibration Error (MCE): {signals['max_calibration_error']:.1%}")
+            if signals.get("overconfidence_ratio") is not None:
+                signal_lines.append(f"    - Overconfident predictions: {signals['overconfidence_ratio']:.1%}")
+            if signals.get("underconfidence_ratio") is not None:
+                signal_lines.append(f"    - Underconfident predictions: {signals['underconfidence_ratio']:.1%}")
+            
+            # Threshold analysis (binary classification only
+            if signals.get("threshold_sensitivity_high") is not None:
+                signal_lines.append(f"    - Threshold sensitivity (±0.1): {signals['threshold_sensitivity_high']:.1%} predictions change")
+            if signals.get("score_stability_index") is not None:
+                signal_lines.append(f"    - Score stability index: {signals['score_stability_index']:.2f}")
+            if signals.get("optimal_threshold_f1") is not None:
+                signal_lines.append(f"    - Optimal F1 threshold: {signals['optimal_threshold_f1']:.2f}")
     
     # Regression-specific
     if task == "regression":
@@ -774,6 +825,7 @@ Available failure modes to consider:
 5. feature_redundancy - Highly correlated or duplicate features
 6. label_noise - Incorrect or noisy target labels
 7. data_leakage - Information from validation leaking into training
+8. probability_calibration - Poor probability quality: miscalibration, low confidence, or poor class separation
 """
     
     prompt = f"""Analyze these model diagnostic signals and identify potential failure modes.
@@ -795,6 +847,7 @@ IMPORTANT:
 - For feature_redundancy, include the specific correlated feature pairs and their correlation values in the evidence.
 - For class_imbalance, include the class distribution and any per-class recall/precision disparities in the evidence.
 - For data_leakage, include the CV-to-holdout gap and any suspicious feature-target correlations in the evidence.
+- For probability_calibration, include the ECE value, confidence statistics, and class separation metrics in the evidence.
 
 Return your analysis as JSON."""
     

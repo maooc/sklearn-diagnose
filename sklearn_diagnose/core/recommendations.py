@@ -166,6 +166,45 @@ RECOMMENDATION_TEMPLATES: Dict[FailureMode, List[dict]] = {
             "rationale": "A truly independent holdout set provides unbiased performance estimates",
         },
     ],
+    
+    FailureMode.PROBABILITY_CALIBRATION: [
+        {
+            "action": "Apply Platt scaling (logistic regression calibration)",
+            "rationale": "Platt scaling trains a logistic regressor on model outputs to improve probability calibration",
+        },
+        {
+            "action": "Use isotonic regression for calibration",
+            "rationale": "Isotonic regression provides non-parametric calibration that can handle more complex miscalibration patterns",
+        },
+        {
+            "action": "Adjust decision thresholds based on business requirements",
+            "rationale": "Poorly calibrated probabilities may require threshold tuning to maintain desired precision/recall tradeoffs",
+        },
+        {
+            "action": "Perform systematic threshold optimization using validation data",
+            "rationale": "Threshold analysis shows significant performance improvements are possible by optimizing the decision threshold",
+        },
+        {
+            "action": "Use threshold moving to balance precision-recall tradeoffs",
+            "rationale": "High threshold sensitivity suggests predictions are clustered near the decision boundary; threshold adjustment can significantly impact results",
+        },
+        {
+            "action": "Implement dynamic thresholding based on confidence distributions",
+            "rationale": "Low score stability indicates many predictions are decision-critical; consider per-class thresholds or confidence-weighted predictions",
+        },
+        {
+            "action": "Consider models with better native calibration",
+            "rationale": "Some models like logistic regression have better native calibration than SVMs or deep neural networks",
+        },
+        {
+            "action": "Use temperature scaling for neural network models",
+            "rationale": "Temperature scaling optimizes a single parameter to calibrate neural network outputs",
+        },
+        {
+            "action": "Review class weights or training objective",
+            "rationale": "Overconfidence often stems from imbalanced datasets or improper loss function weighting",
+        },
+    ],
 }
 
 

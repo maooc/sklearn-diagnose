@@ -19,7 +19,8 @@ sklearn-diagnose acts as an "MRI scanner" for your machine learning models — i
 
 ## Key Features
 
-- **Model Failure Diagnosis**: Detect overfitting, underfitting, high variance, label noise, feature redundancy, class imbalance, and data leakage symptoms
+- **Model Failure Diagnosis**: Detect overfitting, underfitting, high variance, label noise, feature redundancy, class imbalance, data leakage, and probability calibration issues
+- **Probability Prediction Diagnosis (NEW)**: Comprehensive analysis of probability outputs including confidence distribution, class separation, calibration quality, and threshold sensitivity
 - **Interactive Chatbot**: Launch a web-based chatbot to have conversations about your diagnosis results
 - **Cross-Validation Interpretation**: CV interpretation is a core signal extractor within sklearn-diagnose, used to detect instability, overfitting, and potential data leakage
 - **Evidence-Based Hypotheses**: All diagnoses include confidence scores and supporting evidence
@@ -272,6 +273,119 @@ launch_chatbot(
 | **Feature Redundancy** | Correlated/duplicate features | Detailed correlated pair list with correlation values |
 | **Class Imbalance** | Skewed class distribution | Class distribution, per-class recall/precision, recall disparity |
 | **Data Leakage** | Information from future/val in train | CV-to-holdout gap, suspicious feature-target correlations |
+| **Probability Calibration** | Poor probability quality and threshold sensitivity | High ECE, low confidence, overconfidence, high threshold sensitivity, low score stability |
+
+## Probability Prediction Diagnosis (New in v0.3.0)
+
+For classification tasks with probability-enabled models, sklearn-diagnose now provides comprehensive probability quality analysis that integrates with the existing diagnostic pipeline. These signals influence hypothesis generation, summary content, and recommendation ranking.
+
+### Capabilities
+
+| Analysis Dimension | Description | Key Signals |
+|-------------------|-------------|-------------|
+| **Probability Distribution** | Statistical analysis of prediction confidence | Mean/median/min/max confidence, confidence std, confidence distribution |
+| **Prediction Confidence** | Quality of prediction certainty | Low confidence ratio (<70%), very low confidence ratio (<50%), confidence margin |
+| **Class Separation** | Model's ability to distinguish classes | Class separation score, max vs second-max probability difference |
+| **Calibration Quality** | How well probabilities reflect true frequencies | Expected Calibration Error (ECE), max calibration error, overconfidence/underconfidence ratios |
+| **Threshold Sensitivity** | Impact of threshold changes on predictions | Prediction change rate at ±0.1 and ±0.05 thresholds, score stability index |
+| **Threshold Optimization** | Performance at different decision thresholds | Optimal thresholds for F1, precision, recall; performance improvement potential |
+
+### Supported Scikit-Learn Scenarios
+
+| Scenario | Support Status | Behavior |
+|----------|----------------|----------|
+| **Standard Classifiers** | ✅ Full Support | LogisticRegression, RandomForestClassifier, etc. (with `predict_proba`) |
+| **Pipeline** | ✅ Full Support | Works with any Pipeline containing a probability-enabled classifier |
+| **With Validation Set** | ✅ Full Support | Uses validation data for probability analysis (preferred) |
+| **Training Data Only** | ✅ Full Support | Falls back to training data when no validation set is provided |
+| **With Cross-Validation Results** | ✅ Full Support | Supports `cv_results` containing `probabilities` field |
+| **Multi-Class Classification** | ⚠️ Partial Support | Confidence distribution and calibration analysis supported; threshold analysis binary-only |
+| **Non-Probability Models** | ✅ Graceful Degradation | SVM without `probability=True`, etc. — no probability signals but core diagnosis continues to work |
+
+### Integration with Diagnostic Pipeline
+
+Probability signals are fully integrated into the diagnosis workflow:
+
+1. **Signal Extraction**: Probability metrics are computed alongside traditional performance metrics
+2. **Hypothesis Generation**: Threshold sensitivity and calibration issues contribute to `PROBABILITY_CALIBRATION` failure mode detection
+3. **Recommendation Generation**: Threshold optimization and calibration suggestions appear in recommendations
+4. **Summary Generation**: LLM summaries include probability quality metrics when available
+5. **Chatbot Interface**: Full conversation support for probability-related questions
+
+### How to Verify
+
+#### Run Probability Diagnosis Tests
+
+```bash
+# Run all probability diagnosis tests
+python -m pytest tests/test_probability_diagnosis.py -v
+
+# Run specific test categories
+python -m pytest tests/test_probability_diagnosis.py::TestThresholdAnalysis -v
+python -m pytest tests/test_probability_diagnosis.py::TestCrossValidationProbabilityDiagnosis -v
+python -m pytest tests/test_probability_diagnosis.py::TestGracefulDegradation -v
+```
+
+Key tests to verify functionality:
+
+- **Signal Presence**: `TestProbabilitySignalExtraction` — verifies confidence, calibration, and class separation signals are extracted
+- **Threshold Analysis**: `TestThresholdAnalysis` — validates threshold sensitivity and optimization signals
+- **Cross-Validation**: `TestCrossValidationProbabilityDiagnosis` — confirms CV scenario support with probability outputs
+- **Pipeline Compatibility**: `TestPipelineCompatibility` — ensures Pipeline works with probability diagnosis
+- **Graceful Degradation**: `TestGracefulDegradation` — verifies non-probability models work without errors
+- **Signal Comparison**: `TestFullDiagnosisIntegration` — confirms output differences between probability and non-probability models
+
+#### Verify Signal Differences Between Probability vs Non-Probability Models
+
+```python
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+
+from sklearn_diagnose.core.evidence import collect_evidence as gather_evidence
+from sklearn_diagnose.core.signals import extract_all_signals as extract_signals
+
+# Generate data
+X, y = make_classification(n_samples=500, n_classes=2, random_state=42)
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# With probability model
+clf_proba = LogisticRegression(random_state=42)
+clf_proba.fit(X_train, y_train)
+
+evidence_proba = gather_evidence(clf_proba, {"train": (X_train, y_train), "val": (X_val, y_val)}, "classification")
+signals_proba = extract_signals(evidence_proba)
+
+print("Probability model signals:")
+print(f"  - Has probability predictions: {signals_proba.has_probability_predictions}")
+print(f"  - Mean confidence: {signals_proba.mean_prediction_confidence:.2f}")
+print(f"  - ECE: {signals_proba.expected_calibration_error:.1%}")
+print(f"  - Threshold sensitivity: {signals_proba.threshold_sensitivity_high:.1%}")
+
+# Without probability model
+clf_noproba = SVC(probability=False, random_state=42)
+clf_noproba.fit(X_train, y_train)
+
+evidence_noproba = gather_evidence(clf_noproba, {"train": (X_train, y_train), "val": (X_val, y_val)}, "classification")
+signals_noproba = extract_signals(evidence_noproba)
+
+print("\nNon-probability model signals:")
+print(f"  - Has probability predictions: {signals_noproba.has_probability_predictions}")
+print(f"  - Mean confidence: {signals_noproba.mean_prediction_confidence}")  # Should be None
+```
+
+#### Run Demo Script
+
+```bash
+python demo_probability_diagnosis.py
+```
+
+The demo shows probability diagnosis across four scenarios:
+1. Logistic Regression with validation data
+2. Pipeline with StandardScaler
+3. With cross-validation probability results
+4. SVM without probability support (graceful degradation)
 
 ## Output Format
 
