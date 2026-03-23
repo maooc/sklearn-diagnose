@@ -166,6 +166,82 @@ RECOMMENDATION_TEMPLATES: Dict[FailureMode, List[dict]] = {
             "rationale": "A truly independent holdout set provides unbiased performance estimates",
         },
     ],
+
+    # Probability prediction failure modes
+    FailureMode.POOR_CALIBRATION: [
+        {
+            "action": "Apply probability calibration (Platt scaling or isotonic regression)",
+            "rationale": "Calibration adjusts predicted probabilities to better match true likelihoods",
+        },
+        {
+            "action": "Use CalibratedClassifierCV wrapper",
+            "rationale": "sklearn's CalibratedClassifierCV provides built-in calibration on cross-validation folds",
+        },
+        {
+            "action": "Consider temperature scaling for neural networks",
+            "rationale": "Temperature scaling is a simple and effective calibration method for neural networks",
+        },
+    ],
+
+    FailureMode.LOW_CONFIDENCE_PREDICTIONS: [
+        {
+            "action": "Review feature quality and informativeness",
+            "rationale": "Low confidence often indicates features don't strongly discriminate between classes",
+        },
+        {
+            "action": "Consider ensemble methods to boost confidence",
+            "rationale": "Ensembles can provide more confident predictions by aggregating multiple models",
+        },
+        {
+            "action": "Add more discriminative features",
+            "rationale": "Features with stronger class separation will increase prediction confidence",
+        },
+    ],
+
+    FailureMode.AMBIGUOUS_CLASS_BOUNDARIES: [
+        {
+            "action": "Apply feature engineering to increase class separability",
+            "rationale": "Better features can create clearer decision boundaries between classes",
+        },
+        {
+            "action": "Consider non-linear models or kernel methods",
+            "rationale": "Non-linear decision boundaries may better separate ambiguous classes",
+        },
+        {
+            "action": "Use cost-sensitive learning for ambiguous regions",
+            "rationale": "Assigning different costs to misclassification can handle boundary uncertainty",
+        },
+    ],
+
+    FailureMode.SUBOPTIMAL_THRESHOLD: [
+        {
+            "action": "Tune decision threshold based on business costs",
+            "rationale": "The default 0.5 threshold is rarely optimal; tune for precision-recall tradeoff",
+        },
+        {
+            "action": "Use precision-recall curve to select optimal threshold",
+            "rationale": "PR curves show the tradeoff at different thresholds for imbalanced data",
+        },
+        {
+            "action": "Consider threshold-independent metrics like AUC-ROC",
+            "rationale": "AUC-ROC evaluates performance across all thresholds",
+        },
+    ],
+
+    FailureMode.CONFIDENCE_ACCURACY_MISMATCH: [
+        {
+            "action": "Investigate samples with high confidence but wrong predictions",
+            "rationale": "These may indicate overfitting or problematic training examples",
+        },
+        {
+            "action": "Apply label smoothing during training",
+            "rationale": "Label smoothing prevents overconfident predictions on noisy labels",
+        },
+        {
+            "action": "Use regularization to reduce overconfident predictions",
+            "rationale": "Stronger regularization can reduce model overconfidence",
+        },
+    ],
 }
 
 

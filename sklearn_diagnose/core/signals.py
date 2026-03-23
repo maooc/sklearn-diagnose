@@ -27,6 +27,8 @@ from sklearn.metrics import (
     precision_score,
     r2_score,
     recall_score,
+    roc_auc_score,
+    average_precision_score,
 )
 
 from .schemas import Evidence, Signals, TaskType
@@ -137,34 +139,34 @@ def _extract_cv_signals(evidence: Evidence, signals: Signals) -> None:
 
 def _extract_classification_signals(evidence: Evidence, signals: Signals) -> None:
     """Extract classification-specific signals."""
-    
+
     # Class distribution
     unique, counts = np.unique(evidence.y_train, return_counts=True)
     total = len(evidence.y_train)
     signals.class_distribution = {
-        str(cls): count / total 
+        str(cls): count / total
         for cls, count in zip(unique, counts)
     }
-    
+
     # Minority class ratio
     if len(counts) > 1:
         signals.minority_class_ratio = float(np.min(counts) / total)
-    
+
     # Confusion matrix and per-class metrics (if predictions available)
     if evidence.y_pred_val is not None and evidence.y_val is not None:
         try:
             signals.confusion_matrix = confusion_matrix(evidence.y_val, evidence.y_pred_val)
-            
+
             # Per-class recall
             recalls = recall_score(
-                evidence.y_val, evidence.y_pred_val, 
+                evidence.y_val, evidence.y_pred_val,
                 average=None, zero_division=0
             )
             signals.per_class_recall = {
-                str(cls): float(rec) 
+                str(cls): float(rec)
                 for cls, rec in zip(unique, recalls)
             }
-            
+
             # Per-class precision
             precisions = precision_score(
                 evidence.y_val, evidence.y_pred_val,
@@ -176,6 +178,9 @@ def _extract_classification_signals(evidence: Evidence, signals: Signals) -> Non
             }
         except Exception:
             pass  # Handle edge cases gracefully
+
+    # Extract probability-based signals if available
+    _extract_probability_signals(evidence, signals)
 
 
 def _extract_regression_signals(evidence: Evidence, signals: Signals) -> None:
@@ -310,24 +315,214 @@ def compute_score(
             return r2_score(y_true, y_pred)
 
 
+def _extract_probability_signals(evidence: Evidence, signals: Signals) -> None:
+    """
+    Extract probability prediction quality signals.
+
+    This function analyzes probability outputs to assess:
+    - Probability distribution quality
+    - Prediction confidence patterns
+    - Class separation capability
+    - Threshold sensitivity (binary)
+    - Calibration quality
+
+    Only processes validation set probabilities if available.
+    """
+    # Check if probability predictions are available
+    if evidence.y_proba_val is None or evidence.y_val is None:
+        return
+
+    y_proba = evidence.y_proba_val
+    y_true = evidence.y_val
+
+    # Validate probability array shape
+    if len(y_proba.shape) != 2 or y_proba.shape[1] < 2:
+        return
+
+    n_samples, n_classes = y_proba.shape
+    if n_samples == 0 or n_samples != len(y_true):
+        return
+
+    signals.has_probability_outputs = True
+
+    try:
+        # 1. Probability distribution analysis
+        _analyze_probability_distribution(y_proba, signals)
+
+        # 2. Confidence analysis
+        _analyze_confidence_patterns(y_proba, y_true, signals)
+
+        # 3. Class separation analysis
+        _analyze_class_separation(y_proba, signals)
+
+        # 4. Per-class probability analysis
+        _analyze_per_class_probabilities(y_proba, y_true, signals)
+
+        # 5. Binary-specific threshold analysis
+        if n_classes == 2:
+            _analyze_threshold_sensitivity(y_proba, y_true, signals)
+
+    except Exception:
+        # Graceful degradation - don't break diagnosis if probability analysis fails
+        pass
+
+
+def _analyze_probability_distribution(y_proba: np.ndarray, signals: Signals) -> None:
+    """Analyze the distribution of predicted probabilities."""
+    # Get max probability for each sample (confidence in predicted class)
+    max_proba = np.max(y_proba, axis=1)
+
+    signals.proba_mean = float(np.mean(max_proba))
+    signals.proba_std = float(np.std(max_proba))
+
+    # Compute prediction entropy (uncertainty measure)
+    # Add small epsilon to avoid log(0)
+    epsilon = 1e-10
+    proba_clipped = np.clip(y_proba, epsilon, 1.0)
+    entropy = -np.sum(proba_clipped * np.log(proba_clipped), axis=1)
+    signals.proba_entropy = float(np.mean(entropy))
+
+
+def _analyze_confidence_patterns(
+    y_proba: np.ndarray, y_true: np.ndarray, signals: Signals
+) -> None:
+    """Analyze prediction confidence patterns and their relationship to accuracy."""
+    max_proba = np.max(y_proba, axis=1)
+    y_pred = np.argmax(y_proba, axis=1)
+    correct = (y_pred == y_true).astype(int)
+
+    # High confidence ratio (> 0.9)
+    signals.high_confidence_ratio = float(np.mean(max_proba > 0.9))
+
+    # Low confidence ratio (< 0.6)
+    signals.low_confidence_ratio = float(np.mean(max_proba < 0.6))
+
+    # Correlation between confidence and correctness
+    if len(max_proba) > 1 and np.std(max_proba) > 0 and np.std(correct) > 0:
+        signals.confidence_accuracy_correlation = float(
+            np.corrcoef(max_proba, correct)[0, 1]
+        )
+
+
+def _analyze_class_separation(y_proba: np.ndarray, signals: Signals) -> None:
+    """Analyze how well-separated the classes are based on probability margins."""
+    # Sort probabilities in descending order for each sample
+    sorted_proba = np.sort(y_proba, axis=1)[:, ::-1]
+
+    # Margin between top-2 class probabilities
+    if sorted_proba.shape[1] >= 2:
+        margin = sorted_proba[:, 0] - sorted_proba[:, 1]
+        signals.proba_margin_mean = float(np.mean(margin))
+        signals.proba_margin_std = float(np.std(margin))
+
+        # Ambiguous predictions (margin < 0.2)
+        signals.ambiguous_predictions_ratio = float(np.mean(margin < 0.2))
+
+
+def _analyze_per_class_probabilities(
+    y_proba: np.ndarray, y_true: np.ndarray, signals: Signals
+) -> None:
+    """Analyze probability distributions for each true class."""
+    n_classes = y_proba.shape[1]
+    unique_classes = np.unique(y_true)
+
+    per_class_mean = {}
+    per_class_std = {}
+
+    for cls in unique_classes:
+        cls_mask = y_true == cls
+        if np.sum(cls_mask) > 0:
+            # Probability assigned to the true class
+            true_class_proba = y_proba[cls_mask, cls]
+            per_class_mean[str(cls)] = float(np.mean(true_class_proba))
+            per_class_std[str(cls)] = float(np.std(true_class_proba))
+
+    signals.per_class_proba_mean = per_class_mean
+    signals.per_class_proba_std = per_class_std
+
+
+def _analyze_threshold_sensitivity(
+    y_proba: np.ndarray, y_true: np.ndarray, signals: Signals
+) -> None:
+    """
+    Analyze threshold sensitivity for binary classification.
+
+    Computes optimal threshold and performance across different thresholds.
+    """
+    # Positive class probabilities
+    pos_proba = y_proba[:, 1]
+
+    # Compute AUC-ROC and AUC-PR
+    try:
+        signals.auc_roc = float(roc_auc_score(y_true, pos_proba))
+        signals.auc_pr = float(average_precision_score(y_true, pos_proba))
+    except Exception:
+        pass
+
+    # Find optimal threshold by F1 score
+    thresholds = np.linspace(0.1, 0.9, 81)
+    f1_scores = []
+
+    for thresh in thresholds:
+        y_pred_thresh = (pos_proba >= thresh).astype(int)
+        try:
+            f1 = f1_score(y_true, y_pred_thresh, zero_division=0)
+            f1_scores.append(f1)
+        except Exception:
+            f1_scores.append(0.0)
+
+    if f1_scores:
+        best_idx = np.argmax(f1_scores)
+        signals.optimal_threshold = float(thresholds[best_idx])
+
+        # Threshold sensitivity: range of F1 scores across thresholds
+        signals.threshold_sensitivity = float(np.max(f1_scores) - np.min(f1_scores))
+
+    # Calibration error (simplified - mean absolute error between proba and empirical accuracy)
+    try:
+        n_bins = 10
+        bin_boundaries = np.linspace(0, 1, n_bins + 1)
+        calibration_errors = []
+
+        for i in range(n_bins):
+            bin_lower = bin_boundaries[i]
+            bin_upper = bin_boundaries[i + 1]
+
+            # Find samples in this bin
+            if i == n_bins - 1:
+                in_bin = (pos_proba >= bin_lower) & (pos_proba <= bin_upper)
+            else:
+                in_bin = (pos_proba >= bin_lower) & (pos_proba < bin_upper)
+
+            if np.sum(in_bin) > 0:
+                avg_confidence = np.mean(pos_proba[in_bin])
+                avg_accuracy = np.mean(y_true[in_bin])
+                calibration_errors.append(abs(avg_confidence - avg_accuracy))
+
+        if calibration_errors:
+            signals.proba_calibration_error = float(np.mean(calibration_errors))
+    except Exception:
+        pass
+
+
 def analyze_cv_stability(cv_results: Dict[str, Any]) -> Dict[str, Any]:
     """
     Analyze cross-validation result stability.
-    
+
     This provides additional detail for CV interpretation.
-    
+
     Args:
         cv_results: Dictionary from cross_validate()
-        
+
     Returns:
         Dictionary with stability analysis
     """
     if "test_score" not in cv_results:
         return {"error": "No test_score in cv_results"}
-    
+
     test_scores = np.asarray(cv_results["test_score"])
     n_folds = len(test_scores)
-    
+
     analysis = {
         "n_folds": n_folds,
         "mean": float(np.mean(test_scores)),
@@ -337,7 +532,7 @@ def analyze_cv_stability(cv_results: Dict[str, Any]) -> Dict[str, Any]:
         "min_fold": int(np.argmin(test_scores)),
         "max_fold": int(np.argmax(test_scores)),
     }
-    
+
     # Stability assessment
     cv = analysis["cv"]
     if cv is not None:
@@ -349,7 +544,7 @@ def analyze_cv_stability(cv_results: Dict[str, Any]) -> Dict[str, Any]:
             analysis["stability"] = "low"
         else:
             analysis["stability"] = "very_low"
-    
+
     # Detect outlier folds (more than 2 std from mean)
     mean = analysis["mean"]
     std = analysis["std"]
@@ -362,7 +557,7 @@ def analyze_cv_stability(cv_results: Dict[str, Any]) -> Dict[str, Any]:
                 "deviation": float((score - mean) / std) if std > 0 else 0
             })
     analysis["outlier_folds"] = outliers
-    
+
     # Train-test gap analysis if train scores available
     if "train_score" in cv_results:
         train_scores = np.asarray(cv_results["train_score"])
@@ -372,5 +567,5 @@ def analyze_cv_stability(cv_results: Dict[str, Any]) -> Dict[str, Any]:
             "std": float(np.std(gaps)),
             "max": float(np.max(gaps)),
         }
-    
+
     return analysis

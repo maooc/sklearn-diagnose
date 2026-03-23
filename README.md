@@ -272,6 +272,11 @@ launch_chatbot(
 | **Feature Redundancy** | Correlated/duplicate features | Detailed correlated pair list with correlation values |
 | **Class Imbalance** | Skewed class distribution | Class distribution, per-class recall/precision, recall disparity |
 | **Data Leakage** | Information from future/val in train | CV-to-holdout gap, suspicious feature-target correlations |
+| **Poor Calibration** | Predicted probabilities don't match true likelihoods | Calibration error, confidence vs accuracy mismatch |
+| **Low Confidence Predictions** | Model is systematically uncertain | Low mean probability, high entropy, many low-confidence predictions |
+| **Ambiguous Class Boundaries** | Classes overlap in feature space | Small margins between top-2 probabilities, many ambiguous predictions |
+| **Suboptimal Threshold** | Default 0.5 threshold is not optimal | Optimal threshold differs from 0.5, high threshold sensitivity |
+| **Confidence-Accuracy Mismatch** | Model overconfident on wrong predictions | Weak/negative correlation between confidence and correctness |
 
 ## Output Format
 
@@ -336,7 +341,24 @@ report.signals.train_score      # 0.94
 report.signals.val_score        # 0.71
 report.signals.cv_mean          # 0.73 (if CV provided)
 report.signals.cv_std           # 0.12 (if CV provided)
-report.signals.to_dict()        # Convert to dict for serialization
+
+# Probability prediction signals (classification with predict_proba)
+report.signals.has_probability_outputs  # True if probability signals available
+report.signals.proba_mean               # Mean of max predicted probabilities
+report.signals.proba_std                # Std of max predicted probabilities
+report.signals.proba_entropy            # Mean prediction entropy (uncertainty)
+report.signals.proba_calibration_error  # Expected calibration error
+report.signals.high_confidence_ratio    # Ratio of predictions with proba > 0.9
+report.signals.low_confidence_ratio     # Ratio of predictions with proba < 0.6
+report.signals.confidence_accuracy_correlation  # Correlation between confidence and correctness
+report.signals.proba_margin_mean        # Mean margin between top-2 class probabilities
+report.signals.ambiguous_predictions_ratio      # Ratio with margin < 0.2
+report.signals.optimal_threshold        # Threshold that maximizes F1 (binary)
+report.signals.threshold_sensitivity    # How much performance changes with threshold
+report.signals.auc_roc                  # AUC-ROC score (binary)
+report.signals.auc_pr                   # AUC-PR score (binary)
+report.signals.per_class_proba_mean     # Mean proba for each true class
+report.signals.to_dict()                # Convert to dict for serialization
 ```
 
 ## Design Principles

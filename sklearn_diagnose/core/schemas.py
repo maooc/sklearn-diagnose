@@ -21,7 +21,7 @@ class TaskType(str, Enum):
 
 class FailureMode(str, Enum):
     """Recognized model failure modes."""
-    
+
     OVERFITTING = "overfitting"
     UNDERFITTING = "underfitting"
     HIGH_VARIANCE = "high_variance"
@@ -29,6 +29,13 @@ class FailureMode(str, Enum):
     FEATURE_REDUNDANCY = "feature_redundancy"
     CLASS_IMBALANCE = "class_imbalance"
     DATA_LEAKAGE = "data_leakage"
+
+    # Probability prediction failure modes
+    POOR_CALIBRATION = "poor_calibration"
+    LOW_CONFIDENCE_PREDICTIONS = "low_confidence_predictions"
+    AMBIGUOUS_CLASS_BOUNDARIES = "ambiguous_class_boundaries"
+    SUBOPTIMAL_THRESHOLD = "suboptimal_threshold"
+    CONFIDENCE_ACCURACY_MISMATCH = "confidence_accuracy_mismatch"
 
 
 class ConfidenceLevel(str, Enum):
@@ -159,7 +166,37 @@ class Signals:
     # Leakage indicators
     cv_holdout_gap: Optional[float] = None
     suspicious_feature_correlations: Optional[List[Tuple[int, float]]] = None
-    
+
+    # Probability prediction signals (classification only)
+    # Probability distribution analysis
+    proba_mean: Optional[float] = None  # Mean of max predicted probabilities
+    proba_std: Optional[float] = None  # Std of max predicted probabilities
+    proba_entropy: Optional[float] = None  # Mean prediction entropy
+    proba_calibration_error: Optional[float] = None  # Expected calibration error
+
+    # Confidence analysis
+    high_confidence_ratio: Optional[float] = None  # Ratio of predictions with proba > 0.9
+    low_confidence_ratio: Optional[float] = None  # Ratio of predictions with proba < 0.6
+    confidence_accuracy_correlation: Optional[float] = None  # Correlation between confidence and correctness
+
+    # Class separation analysis
+    proba_margin_mean: Optional[float] = None  # Mean margin between top-2 class probabilities
+    proba_margin_std: Optional[float] = None  # Std of margin
+    ambiguous_predictions_ratio: Optional[float] = None  # Ratio with margin < 0.2
+
+    # Threshold analysis
+    optimal_threshold: Optional[float] = None  # Threshold that maximizes F1 (binary)
+    threshold_sensitivity: Optional[float] = None  # How much performance changes with threshold
+    auc_roc: Optional[float] = None  # AUC-ROC score (binary)
+    auc_pr: Optional[float] = None  # AUC-PR score (binary)
+
+    # Per-class probability analysis
+    per_class_proba_mean: Optional[Dict[str, float]] = None  # Mean proba for each true class
+    per_class_proba_std: Optional[Dict[str, float]] = None  # Std proba for each true class
+
+    # Flag indicating if probability signals are available
+    has_probability_outputs: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert signals to dictionary for serialization."""
         result = {}
