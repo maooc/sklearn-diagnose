@@ -191,7 +191,7 @@ def diagnose(
     
     # Layer 2: Extract signals (deterministic statistics)
     signals = extract_all_signals(evidence)
-    signals_dict = signals.to_dict()
+    signals_dict = signals.to_flat_dict()
     
     # Layer 3: LLM generates hypotheses from signals
     hypotheses = generate_llm_hypotheses(
@@ -221,11 +221,14 @@ def diagnose(
     if insufficient_msg:
         llm_summary = insufficient_msg + "\n\n" + llm_summary
     
+    # Convert SignalsCollection to legacy Signals for backward compatibility
+    legacy_signals = signals.to_legacy_signals()
+    
     # Build the report
     report = DiagnosisReport(
         hypotheses=hypotheses,
         recommendations=recommendations,
-        signals=signals,
+        signals=legacy_signals,
         task=task,
         estimator_type=get_estimator_type(estimator),
         has_pipeline=is_pipeline(estimator)

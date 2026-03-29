@@ -197,26 +197,45 @@ def get_all_failure_modes_with_examples() -> Dict[str, List[dict]]:
     }
 
 
-def get_insufficient_evidence_message(signals: Signals) -> Optional[str]:
+def get_insufficient_evidence_message(signals) -> Optional[str]:
     """
     Generate a message when there's insufficient evidence for diagnosis.
     
     Args:
-        signals: Computed signals
+        signals: Computed signals (Signals dataclass or SignalsCollection)
         
     Returns:
         Message string if evidence is insufficient, None otherwise
     """
     issues = []
     
-    if signals.train_score is None:
+    # Handle both Signals dataclass and SignalsCollection
+    from sklearn_diagnose.core.signals import SignalsCollection
+    if isinstance(signals, SignalsCollection):
+        # Access via get method for SignalsCollection
+        train_score = signals.get("train_score")
+        train_score_val = train_score.value if train_score else None
+        val_score = signals.get("val_score")
+        val_score_val = val_score.value if val_score else None
+        cv_mean = signals.get("cv_mean")
+        cv_mean_val = cv_mean.value if cv_mean else None
+        n_samples_train = signals.get("n_samples_train")
+        n_samples_train_val = n_samples_train.value if n_samples_train else None
+    else:
+        # Direct attribute access for Signals dataclass
+        train_score_val = signals.train_score
+        val_score_val = signals.val_score
+        cv_mean_val = signals.cv_mean
+        n_samples_train_val = signals.n_samples_train
+    
+    if train_score_val is None:
         issues.append("Unable to compute training score")
     
-    if signals.val_score is None and signals.cv_mean is None:
+    if val_score_val is None and cv_mean_val is None:
         issues.append("No validation or CV scores available for comparison")
     
-    if signals.n_samples_train is not None and signals.n_samples_train < 50:
-        issues.append(f"Very small training set ({signals.n_samples_train} samples)")
+    if n_samples_train_val is not None and n_samples_train_val < 50:
+        issues.append(f"Very small training set ({n_samples_train_val} samples)")
     
     if issues:
         return (
