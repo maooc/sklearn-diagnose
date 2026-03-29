@@ -49,6 +49,23 @@ Detected Failure Modes:
 LLM Setup (required):
     >>> from sklearn_diagnose import setup_llm
     >>> setup_llm(provider="openai", model="gpt-4o", api_key="sk-...")
+
+New Refactored Signal Extraction API:
+    >>> from sklearn_diagnose import (
+    ...     SignalResult, SignalCategory,
+    ...     BaseSignalExtractor, signal_registry,
+    ...     extract_signals, list_registered_extractors,
+    ...     register_extractor
+    ... )
+    >>> 
+    >>> # List all available signal extractors
+    >>> extractors = list_registered_extractors()
+    >>> 
+    >>> # Extract specific signals
+    >>> signals = extract_signals(evidence, ["train_score", "cv_stability"])
+    >>> 
+    >>> # Register custom extractor
+    >>> register_extractor("my_extractor", MyExtractor(), SignalCategory.PERFORMANCE)
 """
 
 __version__ = "0.1.0"
@@ -58,14 +75,23 @@ from .api import diagnose
 
 # Core types (for advanced users)
 from .core import (
+    BaseSignalExtractor,
     ConfidenceLevel,
     DiagnosisReport,
     Evidence,
     FailureMode,
     Hypothesis,
     Recommendation,
+    SignalCategory,
+    SignalExtractorRegistry,
+    SignalResult,
     Signals,
     TaskType,
+    extract_signals,
+    get_extractor,
+    list_registered_extractors,
+    register_extractor,
+    signal_registry,
 )
 
 # LLM configuration
@@ -90,4 +116,15 @@ __all__ = [
     "TaskType",
     "FailureMode",
     "ConfidenceLevel",
+    # New refactored signal components
+    "SignalResult",
+    "SignalCategory",
+    "BaseSignalExtractor",
+    "SignalExtractorRegistry",
+    "signal_registry",
+    # Signal extraction API
+    "extract_signals",
+    "list_registered_extractors",
+    "get_extractor",
+    "register_extractor",
 ]
