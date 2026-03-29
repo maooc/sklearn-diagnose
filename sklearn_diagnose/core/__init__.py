@@ -4,11 +4,18 @@ Core module for sklearn-diagnose.
 This module provides the foundational components:
 - schemas: Data structures and type definitions
 - evidence: Evidence collection and validation
-- signals: Deterministic signal extraction
+- signals: Deterministic signal extraction (registry-based)
 - hypotheses: Reference rule-based hypothesis generation (LLM is primary)
 - recommendations: Example recommendation templates for LLM guidance
+
+New refactored components:
+- SignalResult: Standardized return format for all signals
+- SignalCategory: Signal categorization
+- SignalExtractorRegistry: Factory/registry for signal extractors
+- BaseSignalExtractor: Base class for custom signal extractors
 """
 
+from .base import BaseSignalExtractor, SignalExtractorRegistry, signal_registry
 from .evidence import (
     collect_evidence,
     get_estimator_type,
@@ -31,11 +38,21 @@ from .schemas import (
     FailureMode,
     Hypothesis,
     Recommendation,
+    SignalCategory,
+    SignalResult,
     Signals,
     TaskType,
     ValidationResult,
 )
-from .signals import analyze_cv_stability, compute_score, extract_all_signals
+from .signals import (
+    analyze_cv_stability,
+    compute_score,
+    extract_all_signals,
+    extract_signals,
+    get_extractor,
+    list_registered_extractors,
+    register_extractor,
+)
 
 __all__ = [
     # Schemas
@@ -48,6 +65,13 @@ __all__ = [
     "Recommendation",
     "DiagnosisReport",
     "ValidationResult",
+    # New refactored signal components
+    "SignalResult",
+    "SignalCategory",
+    # Registry and base classes
+    "BaseSignalExtractor",
+    "SignalExtractorRegistry",
+    "signal_registry",
     # Evidence
     "validate_estimator",
     "validate_datasets",
@@ -55,10 +79,15 @@ __all__ = [
     "collect_evidence",
     "get_estimator_type",
     "is_pipeline",
-    # Signals
+    # Signals (legacy and new API)
     "extract_all_signals",
+    "extract_signals",
     "compute_score",
     "analyze_cv_stability",
+    # Registry convenience functions
+    "list_registered_extractors",
+    "get_extractor",
+    "register_extractor",
     # Hypotheses
     "generate_hypotheses",
     # Recommendations

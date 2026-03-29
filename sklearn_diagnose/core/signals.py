@@ -4,39 +4,88 @@ Deterministic signal extraction for sklearn-diagnose.
 This module computes quantitative statistics from the evidence.
 All computations are deterministic and reproducible.
 
+This module has been refactored to use a registry-based approach
+with standardized SignalResult return format.
+
 Signal extractors are organized by category:
 - Performance signals (train/val scores, gaps)
 - CV signals (mean, std, fold analysis)
-- Residual signals (for regression)
-- Classification signals (class distribution, per-class metrics)
-- Feature signals (correlations, redundancy)
-- Leakage signals (suspicious patterns)
+- Distribution signals (class distribution, residual analysis)
+- Feature signals (correlations, importance, redundancy)
+- Leakage signals (suspicious patterns, risk assessment)
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-from scipy import stats
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    confusion_matrix,
-    f1_score,
-    mean_absolute_error,
-    mean_squared_error,
-    precision_score,
-    r2_score,
-    recall_score,
-)
 
-from .schemas import Evidence, Signals, TaskType
+# Import the signal registry and base classes
+from .base import BaseSignalExtractor, SignalExtractorRegistry, signal_registry
+from .schemas import Evidence, SignalCategory, SignalResult, Signals, TaskType
+
+# Import all signal extractor modules to ensure registration
+from . import cv_based_signals as _cv_based_signals
+from . import distribution_signals as _distribution_signals
+from . import feature_signals as _feature_signals
+from . import leakage_signals as _leakage_signals
+from . import score_based_signals as _score_based_signals
+
+# Re-export utility functions for backward compatibility
+from .cv_based_signals import analyze_cv_stability
+from .score_based_signals import compute_score
+
+__all__ = [
+    "extract_all_signals",
+    "extract_signals",
+    "compute_score",
+    "analyze_cv_stability",
+    "signal_registry",
+    "SignalResult",
+    "SignalCategory",
+    "BaseSignalExtractor",
+    "SignalExtractorRegistry",
+]
+
+
+def extract_signals(
+    evidence: Evidence,
+    extractor_names: Optional[List[str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> List[SignalResult]:
+    """
+    Extract signals using specified extractors.
+    
+    This is the new API that returns standardized SignalResult objects.
+    
+    Args:
+        evidence: Evidence object with all diagnostic inputs
+        extractor_names: Optional list of extractor names to use.
+                       If None, use all registered extractors.
+        params: Optional parameters to pass to extractors
+        
+    Returns:
+        List of SignalResult objects with computed signals
+        
+    Examples:
+        >>> evidence = Evidence(...)
+        >>> signals = extract_signals(evidence)
+        >>> for result in signals:
+        ...     print(f"{result.name}: {result.value}")
+        
+        >>> # Extract specific signals
+        >>> signals = extract_signals(evidence, ["train_score", "val_score", "cv_scores"])
+    """
+    return signal_registry.extract(evidence, extractor_names, params)
 
 
 def extract_all_signals(evidence: Evidence) -> Signals:
     """
     Extract all signals from the provided evidence.
     
-    This is the main entry point for signal extraction.
+    This is the legacy API that returns a Signals object for backward compatibility.
+    For new code, consider using extract_signals() which returns standardized SignalResult objects.
     
     Args:
         evidence: Evidence object with all diagnostic inputs
@@ -46,7 +95,7 @@ def extract_all_signals(evidence: Evidence) -> Signals:
     """
     signals = Signals()
     
-    # Basic data characteristics
+    # Extract basic data characteristics
     signals.n_samples_train = evidence.n_samples_train
     signals.n_samples_val = evidence.n_samples_val
     signals.n_features = evidence.n_features
@@ -54,323 +103,151 @@ def extract_all_signals(evidence: Evidence) -> Signals:
     if evidence.n_samples_train > 0 and evidence.n_features > 0:
         signals.feature_to_sample_ratio = evidence.n_features / evidence.n_samples_train
     
-    # Extract performance signals
-    _extract_performance_signals(evidence, signals)
+    # Use new registry-based extraction and populate legacy Signals object
+    signal_results = extract_signals(evidence)
     
-    # Extract CV signals if available
-    if evidence.has_cv_results:
-        _extract_cv_signals(evidence, signals)
-    
-    # Extract task-specific signals
-    if evidence.task == TaskType.CLASSIFICATION:
-        _extract_classification_signals(evidence, signals)
-    else:
-        _extract_regression_signals(evidence, signals)
-    
-    # Extract feature signals
-    _extract_feature_signals(evidence, signals)
-    
-    # Extract leakage indicators
-    _extract_leakage_signals(evidence, signals)
+    # Map SignalResult objects to legacy Signals attributes
+    _map_signal_results_to_legacy(signal_results, signals)
     
     return signals
 
 
-def _extract_performance_signals(evidence: Evidence, signals: Signals) -> None:
-    """Extract basic performance metrics."""
-    
-    if evidence.task == TaskType.CLASSIFICATION:
-        # Training score
-        if evidence.y_pred_train is not None:
-            signals.train_score = accuracy_score(evidence.y_train, evidence.y_pred_train)
-        
-        # Validation score
-        if evidence.has_validation_set and evidence.y_pred_val is not None:
-            signals.val_score = accuracy_score(evidence.y_val, evidence.y_pred_val)
-    
-    else:  # Regression
-        # Training score (R²)
-        if evidence.y_pred_train is not None:
-            signals.train_score = r2_score(evidence.y_train, evidence.y_pred_train)
-        
-        # Validation score
-        if evidence.has_validation_set and evidence.y_pred_val is not None:
-            signals.val_score = r2_score(evidence.y_val, evidence.y_pred_val)
-    
-    # Train-val gap
-    if signals.train_score is not None and signals.val_score is not None:
-        signals.train_val_gap = signals.train_score - signals.val_score
-
-
-def _extract_cv_signals(evidence: Evidence, signals: Signals) -> None:
+def _map_signal_results_to_legacy(
+    signal_results: List[SignalResult],
+    signals: Signals,
+) -> None:
     """
-    Extract cross-validation signals.
+    Map SignalResult objects to legacy Signals object attributes.
     
-    CV interpretation is a core signal extractor within sklearn-diagnose,
-    used to detect instability, overfitting, and potential data leakage.
+    This is a compatibility layer to maintain backward compatibility
+    with the existing API.
     """
-    cv = evidence.cv_results
+    signal_dict = {result.name: result.value for result in signal_results}
     
-    # Test scores
-    if "test_score" in cv:
-        test_scores = np.asarray(cv["test_score"])
-        signals.cv_fold_scores = test_scores.tolist()
-        signals.cv_mean = float(np.mean(test_scores))
-        signals.cv_std = float(np.std(test_scores))
-        signals.cv_min = float(np.min(test_scores))
-        signals.cv_max = float(np.max(test_scores))
-        signals.cv_range = signals.cv_max - signals.cv_min
+    # Performance signals
+    if "train_score" in signal_dict:
+        signals.train_score = signal_dict["train_score"]
+    if "val_score" in signal_dict:
+        signals.val_score = signal_dict["val_score"]
+    if "train_val_gap" in signal_dict:
+        signals.train_val_gap = signal_dict["train_val_gap"]
     
-    # Train scores (if available)
-    if "train_score" in cv:
-        train_scores = np.asarray(cv["train_score"])
-        signals.cv_train_mean = float(np.mean(train_scores))
-        
-        # CV train-test gap (overfitting signal)
-        if signals.cv_mean is not None:
-            signals.cv_train_val_gap = signals.cv_train_mean - signals.cv_mean
+    # CV signals
+    if "cv_mean" in signal_dict:
+        signals.cv_mean = signal_dict["cv_mean"]
+    if "cv_std" in signal_dict:
+        signals.cv_std = signal_dict["cv_std"]
+    if "cv_min" in signal_dict:
+        signals.cv_min = signal_dict["cv_min"]
+    if "cv_max" in signal_dict:
+        signals.cv_max = signal_dict["cv_max"]
+    if "cv_range" in signal_dict:
+        signals.cv_range = signal_dict["cv_range"]
+    if "cv_fold_scores" in signal_dict:
+        signals.cv_fold_scores = signal_dict["cv_fold_scores"]
+    if "cv_train_mean" in signal_dict:
+        signals.cv_train_mean = signal_dict["cv_train_mean"]
+    if "cv_train_val_gap" in signal_dict:
+        signals.cv_train_val_gap = signal_dict["cv_train_val_gap"]
+    if "cv_holdout_gap" in signal_dict:
+        signals.cv_holdout_gap = signal_dict["cv_holdout_gap"]
     
-    # CV vs holdout comparison (leakage signal)
-    if signals.cv_mean is not None and signals.val_score is not None:
-        signals.cv_holdout_gap = signals.cv_mean - signals.val_score
+    # Distribution signals - Classification
+    if "class_distribution" in signal_dict:
+        signals.class_distribution = signal_dict["class_distribution"]
+    if "minority_class_ratio" in signal_dict:
+        signals.minority_class_ratio = signal_dict["minority_class_ratio"]
+    if "confusion_matrix" in signal_dict:
+        signals.confusion_matrix = signal_dict["confusion_matrix"]
+    if "per_class_recall" in signal_dict:
+        signals.per_class_recall = signal_dict["per_class_recall"]
+    if "per_class_precision" in signal_dict:
+        signals.per_class_precision = signal_dict["per_class_precision"]
+    
+    # Distribution signals - Regression
+    if "residual_mean" in signal_dict:
+        signals.residual_mean = signal_dict["residual_mean"]
+    if "residual_std" in signal_dict:
+        signals.residual_std = signal_dict["residual_std"]
+    if "residual_skew" in signal_dict:
+        signals.residual_skew = signal_dict["residual_skew"]
+    if "residual_kurtosis" in signal_dict:
+        signals.residual_kurtosis = signal_dict["residual_kurtosis"]
+    
+    # Feature signals
+    if "feature_correlations" in signal_dict:
+        signals.feature_correlations = signal_dict["feature_correlations"]
+    if "high_correlation_pairs" in signal_dict:
+        signals.high_correlation_pairs = signal_dict["high_correlation_pairs"]
+    if "feature_importances" in signal_dict:
+        signals.feature_importances = np.array(list(signal_dict["feature_importances"].values()))
+    if "feature_target_correlations" in signal_dict:
+        signals.feature_target_correlations = np.array(list(signal_dict["feature_target_correlations"].values()))
+    
+    # Leakage signals
+    if "suspicious_feature_correlations" in signal_dict:
+        signals.suspicious_feature_correlations = signal_dict["suspicious_feature_correlations"]
 
 
-def _extract_classification_signals(evidence: Evidence, signals: Signals) -> None:
-    """Extract classification-specific signals."""
-    
-    # Class distribution
-    unique, counts = np.unique(evidence.y_train, return_counts=True)
-    total = len(evidence.y_train)
-    signals.class_distribution = {
-        str(cls): count / total 
-        for cls, count in zip(unique, counts)
-    }
-    
-    # Minority class ratio
-    if len(counts) > 1:
-        signals.minority_class_ratio = float(np.min(counts) / total)
-    
-    # Confusion matrix and per-class metrics (if predictions available)
-    if evidence.y_pred_val is not None and evidence.y_val is not None:
-        try:
-            signals.confusion_matrix = confusion_matrix(evidence.y_val, evidence.y_pred_val)
-            
-            # Per-class recall
-            recalls = recall_score(
-                evidence.y_val, evidence.y_pred_val, 
-                average=None, zero_division=0
-            )
-            signals.per_class_recall = {
-                str(cls): float(rec) 
-                for cls, rec in zip(unique, recalls)
-            }
-            
-            # Per-class precision
-            precisions = precision_score(
-                evidence.y_val, evidence.y_pred_val,
-                average=None, zero_division=0
-            )
-            signals.per_class_precision = {
-                str(cls): float(prec)
-                for cls, prec in zip(unique, precisions)
-            }
-        except Exception:
-            pass  # Handle edge cases gracefully
-
-
-def _extract_regression_signals(evidence: Evidence, signals: Signals) -> None:
-    """Extract regression-specific signals (residual analysis)."""
-    
-    if evidence.y_pred_train is None:
-        return
-    
-    # Training residuals
-    residuals = evidence.y_train - evidence.y_pred_train
-    
-    signals.residual_mean = float(np.mean(residuals))
-    signals.residual_std = float(np.std(residuals))
-    
-    # Skewness and kurtosis for residual distribution analysis
-    if len(residuals) > 3:
-        try:
-            signals.residual_skew = float(stats.skew(residuals))
-            signals.residual_kurtosis = float(stats.kurtosis(residuals))
-        except Exception:
-            pass
-
-
-def _extract_feature_signals(evidence: Evidence, signals: Signals) -> None:
-    """Extract feature-level signals."""
-    
-    X = evidence.X_train
-    
-    if len(X.shape) != 2 or X.shape[1] < 2:
-        return  # Need at least 2 features
-    
-    try:
-        # Feature correlation matrix
-        # Handle potential NaN/inf values
-        X_clean = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        # Only compute if we have enough variance
-        variances = np.var(X_clean, axis=0)
-        if np.all(variances > 1e-10):
-            corr_matrix = np.corrcoef(X_clean, rowvar=False)
-            signals.feature_correlations = corr_matrix
-            
-            # Find highly correlated feature pairs
-            high_corr_pairs = []
-            n_features = corr_matrix.shape[0]
-            for i in range(n_features):
-                for j in range(i + 1, n_features):
-                    corr = abs(corr_matrix[i, j])
-                    if corr > 0.9:  # Threshold for high correlation
-                        high_corr_pairs.append((i, j, float(corr)))
-            
-            if high_corr_pairs:
-                signals.high_correlation_pairs = sorted(
-                    high_corr_pairs, 
-                    key=lambda x: x[2], 
-                    reverse=True
-                )
-    except Exception:
-        pass  # Handle numerical issues gracefully
-    
-    # Feature-target correlations
-    try:
-        y = evidence.y_train.astype(float)
-        feature_target_corr = []
-        for i in range(X.shape[1]):
-            corr = np.corrcoef(X[:, i], y)[0, 1]
-            if not np.isnan(corr):
-                feature_target_corr.append(corr)
-            else:
-                feature_target_corr.append(0.0)
-        signals.feature_target_correlations = np.array(feature_target_corr)
-    except Exception:
-        pass
-
-
-def _extract_leakage_signals(evidence: Evidence, signals: Signals) -> None:
-    """Extract signals that may indicate data leakage."""
-    
-    # Already computed CV vs holdout gap in CV signals
-    
-    # Look for suspiciously high feature-target correlations
-    if signals.feature_target_correlations is not None:
-        suspicious = []
-        for i, corr in enumerate(signals.feature_target_correlations):
-            if abs(corr) > 0.95:  # Threshold for suspicious correlation
-                suspicious.append((i, float(corr)))
-        
-        if suspicious:
-            signals.suspicious_feature_correlations = sorted(
-                suspicious,
-                key=lambda x: abs(x[1]),
-                reverse=True
-            )
-
-
-def compute_score(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    task: TaskType,
-    metric: str = "default"
-) -> float:
+# Convenience functions for accessing the registry
+def list_registered_extractors() -> Dict[str, Dict[str, Any]]:
     """
-    Compute a single score for the given predictions.
+    List all registered signal extractors with their metadata.
+    
+    Returns:
+        Dictionary mapping extractor names to their metadata
+    """
+    return signal_registry.list_all()
+
+
+def get_extractor(name: str) -> BaseSignalExtractor:
+    """
+    Get a signal extractor by name.
     
     Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        task: Classification or regression
-        metric: Metric name or "default"
+        name: Name of the extractor to retrieve
         
     Returns:
-        Computed score
+        The signal extractor instance
+        
+    Raises:
+        ValueError: If extractor with given name is not registered
     """
-    if task == TaskType.CLASSIFICATION:
-        if metric == "default" or metric == "accuracy":
-            return accuracy_score(y_true, y_pred)
-        elif metric == "balanced_accuracy":
-            return balanced_accuracy_score(y_true, y_pred)
-        elif metric == "f1":
-            return f1_score(y_true, y_pred, average="weighted")
-        else:
-            return accuracy_score(y_true, y_pred)
-    
-    else:  # Regression
-        if metric == "default" or metric == "r2":
-            return r2_score(y_true, y_pred)
-        elif metric == "mse":
-            return -mean_squared_error(y_true, y_pred)  # Negative for consistency
-        elif metric == "mae":
-            return -mean_absolute_error(y_true, y_pred)
-        else:
-            return r2_score(y_true, y_pred)
+    return signal_registry.get(name)
 
 
-def analyze_cv_stability(cv_results: Dict[str, Any]) -> Dict[str, Any]:
+def register_extractor(
+    name: str,
+    extractor: BaseSignalExtractor,
+    category: SignalCategory,
+    tags: Optional[List[str]] = None,
+    force: bool = False,
+) -> None:
     """
-    Analyze cross-validation result stability.
+    Register a custom signal extractor.
     
-    This provides additional detail for CV interpretation.
+    This allows users to extend the signal extraction system with
+    their own extractors.
     
     Args:
-        cv_results: Dictionary from cross_validate()
+        name: Unique name for the extractor
+        extractor: The signal extractor instance
+        category: Category of the signal extractor
+        tags: Optional tags for filtering
+        force: If True, overwrite existing extractor with the same name
         
-    Returns:
-        Dictionary with stability analysis
+    Raises:
+        ValueError: If extractor with same name already exists and force=False
+        
+    Examples:
+        >>> from sklearn_diagnose.core import register_extractor, SignalCategory
+        >>> from sklearn_diagnose.core import BaseSignalExtractor, SignalResult
+        >>> 
+        >>> class MyExtractor(BaseSignalExtractor):
+        ...     category = SignalCategory.PERFORMANCE
+        ...     def extract(self, evidence, params=None):
+        ...         return [SignalResult(...)]
+        >>> 
+        >>> register_extractor("my_extractor", MyExtractor(), SignalCategory.PERFORMANCE)
     """
-    if "test_score" not in cv_results:
-        return {"error": "No test_score in cv_results"}
-    
-    test_scores = np.asarray(cv_results["test_score"])
-    n_folds = len(test_scores)
-    
-    analysis = {
-        "n_folds": n_folds,
-        "mean": float(np.mean(test_scores)),
-        "std": float(np.std(test_scores)),
-        "cv": float(np.std(test_scores) / np.mean(test_scores)) if np.mean(test_scores) > 0 else None,
-        "range": float(np.max(test_scores) - np.min(test_scores)),
-        "min_fold": int(np.argmin(test_scores)),
-        "max_fold": int(np.argmax(test_scores)),
-    }
-    
-    # Stability assessment
-    cv = analysis["cv"]
-    if cv is not None:
-        if cv < 0.05:
-            analysis["stability"] = "high"
-        elif cv < 0.10:
-            analysis["stability"] = "medium"
-        elif cv < 0.20:
-            analysis["stability"] = "low"
-        else:
-            analysis["stability"] = "very_low"
-    
-    # Detect outlier folds (more than 2 std from mean)
-    mean = analysis["mean"]
-    std = analysis["std"]
-    outliers = []
-    for i, score in enumerate(test_scores):
-        if abs(score - mean) > 2 * std:
-            outliers.append({
-                "fold": i,
-                "score": float(score),
-                "deviation": float((score - mean) / std) if std > 0 else 0
-            })
-    analysis["outlier_folds"] = outliers
-    
-    # Train-test gap analysis if train scores available
-    if "train_score" in cv_results:
-        train_scores = np.asarray(cv_results["train_score"])
-        gaps = train_scores - test_scores
-        analysis["train_test_gaps"] = {
-            "mean": float(np.mean(gaps)),
-            "std": float(np.std(gaps)),
-            "max": float(np.max(gaps)),
-        }
-    
-    return analysis
+    signal_registry.register(name, extractor, category, tags, force)

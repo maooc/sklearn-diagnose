@@ -12,6 +12,69 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 
+class SignalCategory(str, Enum):
+    """Categories of signals extracted from evidence."""
+    
+    PERFORMANCE = "performance"
+    CV = "cross_validation"
+    DISTRIBUTION = "distribution"
+    FEATURE = "feature"
+    LEAKAGE = "leakage"
+    DATA_QUALITY = "data_quality"
+
+
+@dataclass
+class SignalResult:
+    """
+    Standardized result format for signal extractors.
+    
+    This class provides a consistent interface for all signal computations,
+    making downstream processing easier and more predictable.
+    
+    Attributes:
+        name: Unique identifier for the signal
+        value: Computed signal value (can be scalar, array, dict, etc.)
+        category: Category of the signal (for grouping)
+        description: Human-readable description of what the signal represents
+        metadata: Optional additional context (e.g., thresholds, units)
+    """
+    
+    name: str
+    value: Any
+    category: SignalCategory
+    description: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert signal result to dictionary for serialization."""
+        result = {
+            "name": self.name,
+            "value": self._to_serializable(self.value),
+            "category": self.category.value,
+            "description": self.description,
+        }
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
+    
+    @staticmethod
+    def _to_serializable(value: Any) -> Any:
+        """Convert non-serializable values to serializable format."""
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        elif isinstance(value, np.generic):
+            return value.item()
+        elif isinstance(value, dict):
+            return {k: SignalResult._to_serializable(v) for k, v in value.items()}
+        elif isinstance(value, (list, tuple)):
+            return [SignalResult._to_serializable(v) for v in value]
+        return value
+    
+    def __repr__(self) -> str:
+        value_repr = repr(self.value)[:100] + "..." if len(repr(self.value)) > 100 else repr(self.value)
+        return f"SignalResult(name='{self.name}', category='{self.category.value}', value={value_repr})"
+
+
 class TaskType(str, Enum):
     """Supported ML task types."""
     
